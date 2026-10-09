@@ -472,7 +472,7 @@
 			},
 
 			'/Y': {
-				rvsm: true,
+				rvsm: false,
 				rnav: true,
 				gnss: false,
 			},
@@ -490,7 +490,7 @@
 			},
 
 			'/G': {
-				rvsm: true,
+				rvsm: false,
 				rnav: true,
 				gnss: true,
 			},
