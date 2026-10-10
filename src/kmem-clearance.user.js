@@ -14,6 +14,8 @@
 	'use strict';
 
 	const PREFIX = '[KMEM Validator]';
+	const VATSIM_API = 'https://data.vatsim.net/v3/vatsim-data.json';
+	const FALLBACK_DEPARTURE_FREQUENCIES = ['122.8', 'OFFLINE'];
 
 	/*
 	 * ============================================================
@@ -22,21 +24,18 @@
 	 */
 
 	const MEM_RULES = {
-		departureFrequency: '125.8',
-
 		jetInitialAltitude: 5000,
-
 		propInitialAltitude: 3000,
 
 		restrictedDepartures: {
-			AUTMN: ['CHLDR5', 'ANSWA'],
-			BINKY: ['PIEPE6', 'IBUFY'],
-			GENEH: ['CRSON7', 'HUMMS'],
-			GMBUD: ['BBKING7', 'KERMI'],
-			GRRIZ: ['JTEEE5', 'ODATE'],
+			AUTMN: ['CHLDR', 'ANSWA'],
+			BINKY: ['PIEPE', 'IBUFY'],
+			GENEH: ['CRSON', 'HUMMS'],
+			GMBUD: ['BBKING', 'KERMI'],
+			GRRIZ: ['JTEEE', 'ODATE'],
 			HOTRD: ['ZUMIT', 'JTEEE'],
 			NIKEI: ['ZUMIT', 'FOXOM'],
-			OLEMS: ['PIEPE6', 'IBUFY'],
+			OLEMS: ['PIEPE', 'IBUFY'],
 		},
 
 		rvsmOnly: {
@@ -85,6 +84,7 @@
 	const AIRPORT_API = 'https://ryanburnette.github.io/airports-api/icao/';
 
 	const airportCache = new Map();
+	let departureFrequencyRequest = null;
 
 	/*
 	 * ============================================================
@@ -100,12 +100,58 @@
 		return clean(value).toUpperCase();
 	}
 
+	function normalizeFrequency(value) {
+		return clean(value)
+			.replace(/(\.\d*?[1-9])0+$/, '$1')
+			.replace(/\.0+$/, '');
+	}
+
 	function log(...args) {
 		console.log(PREFIX, ...args);
 	}
 
 	function warn(...args) {
 		console.warn(PREFIX, ...args);
+	}
+
+	async function getOnlineDepartureFrequency() {
+		if (!departureFrequencyRequest) {
+			departureFrequencyRequest = fetch(VATSIM_API, { cache: 'no-store' })
+				.then((response) => {
+					if (!response.ok) {
+						throw new Error(`VATSIM data request failed (${response.status}).`);
+					}
+
+					return response.json();
+				})
+				.then((vatsim) => {
+					const controller = vatsim.controllers
+						.filter((item) => {
+							const callsign = upper(item.callsign);
+
+							return (
+								(callsign.startsWith('ZME_') ||
+									callsign.startsWith('MXX_') ||
+									callsign.startsWith('MEM_')) &&
+								!callsign.endsWith('_GND')
+							);
+						})
+						.sort(
+							(a, b) =>
+								Number(a.facility) - Number(b.facility) ||
+								upper(a.callsign).localeCompare(upper(b.callsign)),
+						)
+						.at(0);
+
+					return controller?.frequency || null;
+				})
+				.catch((error) => {
+					departureFrequencyRequest = null;
+					throw error;
+				});
+		}
+
+		return departureFrequencyRequest;
 	}
 
 	async function getAirportInfo(icao) {
@@ -242,6 +288,10 @@
 			.querySelectorAll('[data-kmem-altitude-hints="true"]')
 			.forEach((element) => element.remove());
 
+		card
+			.querySelectorAll('[data-kmem-selection-hint="true"]')
+			.forEach((element) => element.remove());
+
 		card.querySelectorAll('[data-kmem-field]').forEach((element) => {
 			restore(element);
 			delete element.dataset.kmemField;
@@ -254,6 +304,33 @@
 		}
 
 		return element;
+	}
+
+	function showSelectionHint(
+		departureElement,
+		transitionElement,
+		correctDeparture,
+		correctTransition,
+	) {
+		const values = [];
+
+		if (correctDeparture && correctTransition) {
+			values.push(`${correctDeparture} ${correctTransition}`);
+		}
+
+		if (!values.length) {
+			return;
+		}
+
+		const hint = document.createElement('span');
+		hint.dataset.kmemSelectionHint = 'true';
+		hint.textContent = values.join(' | ');
+		hint.style.marginLeft = '6px';
+		hint.style.color = '#ef4444';
+		hint.style.fontWeight = '700';
+
+		const anchor = transitionElement || departureElement;
+		anchor?.after(hint);
 	}
 
 	/*
@@ -577,9 +654,13 @@
 		}
 
 		const hint = document.createElement('span');
-		hint.textContent = ` [${altitudes[0]}, ${altitudes[1]}]`;
+		hint.textContent = `${altitudes[0]} OR ${altitudes[1]}`;
 		hint.dataset.kmemAltitudeHints = 'true';
 		hint.style.fontWeight = '400';
+		hint.style.marginLeft = '6px';
+		hint.style.color = '#ef4444';
+		hint.style.fontWeight = '700';
+
 		element.after(hint);
 	}
 
@@ -800,6 +881,13 @@
 		return MEM_RULES.currentCycles[base] ?? null;
 	}
 
+	function getCurrentSID(sid) {
+		const base = getSIDBase(sid);
+		const cycle = getSIDCycle(sid);
+
+		return cycle === null ? sid : `${base}${cycle}`;
+	}
+
 	function isCurrentSID(sid) {
 		const base = getSIDBase(sid);
 		const cycle = getSIDCycle(sid);
@@ -977,6 +1065,14 @@
 
 		const aircraftCategory = getAircraftType(aircraft.type);
 
+		let onlineDepartureFrequency = null;
+
+		try {
+			onlineDepartureFrequency = await getOnlineDepartureFrequency();
+		} catch (error) {
+			warn('Unable to determine the online departure frequency:', error);
+		}
+
 		/*
 		 * --------------------------------------------------------
 		 * Initial altitude
@@ -994,8 +1090,17 @@
 			expectedInitialAltitude !== null &&
 			initialAltitude.feet === expectedInitialAltitude;
 
+		const normalizedDepartureFrequency = normalizeFrequency(
+			departureFrequency.value,
+		);
+
 		const departureFrequencyValid =
-			departureFrequency.value === MEM_RULES.departureFrequency;
+			onlineDepartureFrequency !== null
+				? normalizedDepartureFrequency ===
+					normalizeFrequency(onlineDepartureFrequency)
+				: FALLBACK_DEPARTURE_FREQUENCIES.includes(
+						upper(normalizedDepartureFrequency),
+					);
 
 		/*
 		 * --------------------------------------------------------
@@ -1015,6 +1120,13 @@
 			parsedSID.sid,
 			parsedSID.transition,
 			equipment,
+		);
+
+		showSelectionHint(
+			sidElements.sidElement,
+			sidElements.transitionElement,
+			getCurrentSID(departureRule.expectedDeparture),
+			departureRule.expectedTransition,
 		);
 
 		const filedFlightLevel = parseFlightLevel(filedAltitude.value);
@@ -1087,9 +1199,13 @@
 			mark(
 				departureFrequency.element,
 				departureFrequencyValid ? 'valid' : 'invalid',
-				departureFrequencyValid
-					? `Departure frequency ${MEM_RULES.departureFrequency} is correct.`
-					: `Expected departure frequency ${MEM_RULES.departureFrequency}.`,
+				onlineDepartureFrequency === null
+					? departureFrequencyValid
+						? 'No higher facility is online. 122.8 or OFFLINE is valid.'
+						: 'No higher facility is online. Use 122.8 or OFFLINE.'
+					: departureFrequencyValid
+						? `Departure frequency ${onlineDepartureFrequency} is correct.`
+						: `Expected departure frequency ${onlineDepartureFrequency}.`,
 			);
 		}
 
@@ -1097,7 +1213,7 @@
 		 * SID
 		 */
 
-		const sidElement = sidElements.sidElement || route.element;
+		const sidElement = sidElements.sidElement;
 
 		if (sidElement) {
 			mark(
@@ -1248,7 +1364,7 @@
 	function scheduleScan() {
 		clearTimeout(scanTimer);
 
-		scanTimer = setTimeout(scan, 150);
+		scanTimer = setTimeout(scan, 1550);
 	}
 
 	/*
@@ -1276,8 +1392,4 @@
 	log('KMEM vTDLS validator loaded.');
 
 	scan();
-
-	setTimeout(scan, 500);
-	setTimeout(scan, 1500);
-	setTimeout(scan, 3000);
 })();
