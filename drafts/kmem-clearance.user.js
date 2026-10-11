@@ -16,6 +16,10 @@
 	const PREFIX = '[vTDLS Validator]';
 	const VATSIM_API = 'https://data.vatsim.net/v3/vatsim-data.json';
 	const AIRPORT_API = 'https://ryanburnette.github.io/airports-api/icao/';
+	const RULES_API =
+		'https://raw.githubusercontent.com/RHGDEV/Artcc-Scripts/refs/heads/main/rules/KMEM.json';
+	const PLANE_TYPES_API =
+		'https://raw.githubusercontent.com/RHGDEV/Artcc-Scripts/refs/heads/main/rules/PlaneTypes.json';
 	const FALLBACK_DEPARTURE_FREQUENCIES = ['122.8', 'OFFLINE'];
 
 	/*
@@ -27,6 +31,22 @@
 	const MEM_RULES = {
 		jetInitialAltitude: 5000,
 		propInitialAltitude: 3000,
+		aircraftTypes: {
+			jet: [
+				'^A[1234]\\d\\d$',
+				'^A\\d{2}N$',
+				'^B\\d{3}$',
+				'^B7[0-9]{2}$',
+				'^B[3579][0-9][A-Z]$',
+				'^MD\\d',
+				'^DC\\d',
+				'^CRJ',
+				'^E1\\d',
+				'^E2\\d',
+				'^(GLF|GULF|CL|C56|C5|F2|FA|H25|LJ|BE4)',
+			],
+			prop: ['^(C1|C2|C3|BE\\d|PC\\d|PA\\d|DA\\d|AT\\d|DHC|DH8|SF34|JS3)'],
+		},
 
 		restrictedDepartures: {
 			AUTMN: ['CHLDR', 'ANSWA'],
@@ -84,6 +104,10 @@
 
 	const airportCache = new Map();
 	let departureFrequencyRequest = null;
+	let activeRules = MEM_RULES;
+	let activeAircraftTypes = MEM_RULES.aircraftTypes;
+	let rulesRequest = null;
+	let planeTypesRequest = null;
 
 	/*
 	 * ============================================================
@@ -111,6 +135,71 @@
 
 	function warn(...args) {
 		console.warn(PREFIX, ...args);
+	}
+
+	async function loadRemoteRules() {
+		if (!rulesRequest) {
+			rulesRequest = fetch(RULES_API, { cache: 'no-store' })
+				.then((response) => {
+					if (!response.ok) {
+						throw new Error(`Rules request failed (${response.status}).`);
+					}
+
+					return response.json();
+				})
+				.then((remoteRules) => {
+					if (!remoteRules || typeof remoteRules !== 'object') {
+						throw new Error('Remote rules returned an invalid object.');
+					}
+
+					activeRules = {
+						...MEM_RULES,
+						...remoteRules,
+						currentCycles:
+							remoteRules.currentCycles ||
+							remoteRules.sidCycles ||
+							MEM_RULES.currentCycles,
+					};
+				});
+		}
+
+		try {
+			await rulesRequest;
+		} catch (error) {
+			rulesRequest = null;
+			warn('Unable to load remote rules. Using local defaults.', error);
+		}
+	}
+
+	async function loadRemotePlaneTypes() {
+		if (!planeTypesRequest) {
+			planeTypesRequest = fetch(PLANE_TYPES_API, { cache: 'no-store' })
+				.then((response) => {
+					if (!response.ok) {
+						throw new Error(`Plane types request failed (${response.status}).`);
+					}
+
+					return response.json();
+				})
+				.then((planeTypes) => {
+					if (
+						!planeTypes ||
+						!Array.isArray(planeTypes.jet) ||
+						!Array.isArray(planeTypes.prop)
+					) {
+						throw new Error('Remote plane types returned an invalid object.');
+					}
+
+					activeAircraftTypes = planeTypes;
+				});
+		}
+
+		try {
+			await planeTypesRequest;
+		} catch (error) {
+			planeTypesRequest = null;
+			warn('Unable to load remote plane types. Using local defaults.', error);
+		}
 	}
 
 	async function getOnlineDepartureFrequency() {
@@ -466,69 +555,18 @@
 
 	function getAircraftType(type) {
 		const t = upper(type);
+		const matches = (patterns) =>
+			patterns.some((pattern) => {
+				try {
+					return new RegExp(pattern).test(t);
+				} catch (error) {
+					warn(`Invalid aircraft pattern: ${pattern}`, error);
+					return false;
+				}
+			});
 
-		/*
-		 * Airbus
-		 */
-		if (/^A[1234]\d\d$/.test(t)) {
-			return 'JET';
-		}
-
-		if (/^A\d{2}N$/.test(t)) {
-			return 'JET';
-		}
-
-		/*
-		 * Boeing
-		 */
-		if (/^B\d{3}$/.test(t)) {
-			return 'JET';
-		}
-
-		if (/^B7[0-9]{2}$/.test(t)) {
-			return 'JET';
-		}
-
-		if (/^B[3579][0-9][A-Z]$/.test(t)) {
-			return 'JET';
-		}
-
-		/*
-		 * McDonnell Douglas
-		 */
-		if (/^MD\d/.test(t)) {
-			return 'JET';
-		}
-
-		if (/^DC\d/.test(t)) {
-			return 'JET';
-		}
-
-		/*
-		 * Regional jets
-		 */
-		if (/^CRJ/.test(t)) {
-			return 'JET';
-		}
-
-		if (/^E1\d/.test(t)) {
-			return 'JET';
-		}
-
-		if (/^E2\d/.test(t)) {
-			return 'JET';
-		}
-
-		/*
-		 * Common business jets.
-		 */
-		if (/^(GLF|GULF|CL|C56|C5|F2|FA|H25|LJ|BE4)/.test(t)) {
-			return 'JET';
-		}
-
-		if (/^(C1|C2|C3|BE\d|PC\d|PA\d|DA\d|AT\d|DHC|DH8|SF34|JS3)/.test(t)) {
-			return 'PROP';
-		}
+		if (matches(activeAircraftTypes?.jet || [])) return 'JET';
+		if (matches(activeAircraftTypes?.prop || [])) return 'PROP';
 
 		return 'UNKNOWN';
 	}
@@ -877,7 +915,7 @@
 	function getSIDCycle(sid) {
 		const base = getSIDBase(sid);
 
-		return MEM_RULES.currentCycles[base] ?? null;
+		return activeRules.currentCycles[base] ?? null;
 	}
 
 	function getCurrentSID(sid) {
@@ -1079,9 +1117,9 @@
 
 		const expectedInitialAltitude =
 			aircraftCategory === 'JET'
-				? MEM_RULES.jetInitialAltitude
+				? activeRules.jetInitialAltitude
 				: aircraftCategory === 'PROP'
-					? MEM_RULES.propInitialAltitude
+					? activeRules.propInitialAltitude
 					: null;
 
 		const initialAltitudeValid =
@@ -1389,5 +1427,5 @@
 
 	log('KMEM vTDLS validator loaded.');
 
-	scan();
+	Promise.all([loadRemoteRules(), loadRemotePlaneTypes()]).then(scan);
 })();
