@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         KMEM vTDLS Flight Plan Validator
-// @namespace    https://vectorartcc.com/
+// @namespace    https://artcc.huskey.cc/tools/vTDLS-KMEM-Validator
 // @version      0.5.0
 // @description  KMEM vTDLS flight plan validator using Vector ARTCC KMEM rules
 // @match        https://tdls.virtualnas.net/*
@@ -44,7 +44,7 @@
 			transitions: {
 				AZONE: 'ETWOO',
 				BBKND: 'ETREE',
-				CHLDR: 'EONEE',
+				CHLDR: 'WONEE',
 				CRSON: 'NFOUR',
 				DUCKZ: 'WTWOO',
 				GOETZ: 'EONEE',
@@ -926,11 +926,13 @@
 	function getDepartureRule(sid, transition, equipment) {
 		const sidBase = getSIDBase(sid);
 
-		/* Non-RNAV aircraft must use ELVIS4. */
+		const restriction = MEM_RULES.restrictedDepartures[sidBase];
 
 		if (!equipment.rnav) {
+			/* Resolve restricted departures before finding the ELVIS gate. */
+			const departureBase = getSIDBase(restriction?.[0] || sidBase);
 			const expectedTransition =
-				MEM_RULES.rvsmOnly.transitions[sidBase] || null;
+				MEM_RULES.rvsmOnly.transitions[departureBase] || null;
 
 			return {
 				type: 'RNAV',
@@ -947,8 +949,6 @@
 		 * Normal restricted departure mapping.
 		 */
 
-		const restriction = MEM_RULES.restrictedDepartures[sidBase];
-
 		if (!restriction) {
 			return {
 				type: 'NORMAL',
@@ -958,7 +958,6 @@
 				expectedTransition: null,
 			};
 		}
-
 		const expectedSID = restriction[0];
 
 		const expectedTransition = restriction[1];
