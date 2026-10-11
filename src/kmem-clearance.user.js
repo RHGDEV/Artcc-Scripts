@@ -13,8 +13,9 @@
 (function () {
 	'use strict';
 
-	const PREFIX = '[KMEM Validator]';
+	const PREFIX = '[vTDLS Validator]';
 	const VATSIM_API = 'https://data.vatsim.net/v3/vatsim-data.json';
+	const AIRPORT_API = 'https://ryanburnette.github.io/airports-api/icao/';
 	const FALLBACK_DEPARTURE_FREQUENCIES = ['122.8', 'OFFLINE'];
 
 	/*
@@ -80,8 +81,6 @@
 			ZUMIT: 5,
 		},
 	};
-
-	const AIRPORT_API = 'https://ryanburnette.github.io/airports-api/icao/';
 
 	const airportCache = new Map();
 	let departureFrequencyRequest = null;
