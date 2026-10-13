@@ -21,10 +21,8 @@ function getfreqList() {
 								const callsign = controller.callsign.toUpperCase();
 
 								return (
-									(callsign.startsWith('ZME_') ||
-										callsign.startsWith('MXX_') ||
-										callsign.startsWith('MEM_')) &&
-									!callsign.endsWith('_GND')
+									callsign.startsWith('MEM_') &&
+									Number(controller.facility) >= 5
 								);
 							})
 							.sort(
