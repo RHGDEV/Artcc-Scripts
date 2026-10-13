@@ -1,0 +1,56 @@
+{
+	"schemaVersion": 1,
+	"airport": "KBNA",
+	"centerCode": "MEM",
+	"updatedAt": "2026-10-13",
+	"initialAltitudes": {
+		"jets": 5000,
+		"props": 3000
+	},
+	"restrictedDepartures": {
+		"AUTMN": ["CHLDR", "ANSWA"],
+		"BINKY": ["PIEPE", "IBUFY"],
+		"GENEH": ["CRSON", "HUMMS"],
+		"GMBUD": ["BBKING", "KERMI"],
+		"GRRIZ": ["JTEEE", "ODATE"],
+		"HOTRD": ["ZUMIT", "JTEEE"],
+		"NIKEI": ["ZUMIT", "FOXOM"],
+		"OLEMS": ["PIEPE", "IBUFY"]
+	},
+	"rvsmOnly": {
+		"departure": "ELVIS",
+		"transitions": {
+			"AZONE": "ETWOO",
+			"BBKND": "ETREE",
+			"CHLDR": "WONEE",
+			"CRSON": "NFOUR",
+			"DUCKZ": "WTWOO",
+			"GOETZ": "EONEE",
+			"JTEEE": "NTWOO",
+			"PIEPE": "STWOO",
+			"SELPH": "NTREE",
+			"ZUMIT": "WTREE",
+			"AUTMN": "SFOUR",
+			"BINKY": "STREE",
+			"GENEH": "NFIVE",
+			"GMBUD": "EFOUR",
+			"GRRIZ": "NRONE",
+			"HOTRD": "WFIVE",
+			"NIKEI": "WFOUR",
+			"OLEMS": "SONEI"
+		}
+	},
+	"sidCycles": {
+		"AZONE": 7,
+		"BBKING": 7,
+		"CHLDR": 5,
+		"CRSON": 7,
+		"DUCKZ": 5,
+		"ELVIS": 4,
+		"GOETZ": 7,
+		"JTEEE": 5,
+		"PIEPE": 6,
+		"SELPH": 7,
+		"ZUMIT": 5
+	}
+}
