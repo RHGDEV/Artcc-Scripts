@@ -1,10 +1,12 @@
 {
 	"schemaVersion": 1,
 	"airport": "KMEM",
-	"effectiveCycle": "2026-10",
-	"updatedAt": "2026-10-11",
-	"jetInitialAltitude": 5000,
-	"propInitialAltitude": 3000,
+	"centerCode": "MEM",
+	"updatedAt": "2026-10-13",
+	"initialAltitudes": {
+		"jets": 5000,
+		"props": 3000
+	},
 	"restrictedDepartures": {
 		"AUTMN": ["CHLDR", "ANSWA"],
 		"BINKY": ["PIEPE", "IBUFY"],
@@ -16,7 +18,7 @@
 		"OLEMS": ["PIEPE", "IBUFY"]
 	},
 	"rvsmOnly": {
-		"departure": "ELVIS4",
+		"departure": "ELVIS",
 		"transitions": {
 			"AZONE": "ETWOO",
 			"BBKND": "ETREE",
