@@ -11,7 +11,7 @@
 		"AUTMN": ["CHLDR", "ANSWA"],
 		"BINKY": ["PIEPE", "IBUFY"],
 		"GENEH": ["CRSON", "HUMMS"],
-		"GMBUD": ["BBKING", "KERMI"],
+		"GMBUD": ["BBKNG", "KERMI"],
 		"GRRIZ": ["JTEEE", "ODATE"],
 		"HOTRD": ["ZUMIT", "JTEEE"],
 		"NIKEI": ["ZUMIT", "FOXOM"],
@@ -42,7 +42,7 @@
 	},
 	"sidCycles": {
 		"AZONE": 7,
-		"BBKING": 7,
+		"BBKNG": 7,
 		"CHLDR": 5,
 		"CRSON": 7,
 		"DUCKZ": 5,
