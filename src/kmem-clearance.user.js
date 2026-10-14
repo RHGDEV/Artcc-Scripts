@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         KMEM vTDLS Flight Plan Validator
-// @namespace    https://artcc.huskey.cc/tools/vTDLS-KMEM-Validator
+// @namespace    https://artcc.huskey.cc/tools/vtdls-validator/
 // @version      0.5.0
 // @description  KMEM vTDLS flight plan validator using Vector ARTCC KMEM rules
 // @match        https://tdls.virtualnas.net/*
@@ -17,7 +17,7 @@
 	const VATSIM_API = 'https://data.vatsim.net/v3/vatsim-data.json';
 	const AIRPORT_API = 'https://ryanburnette.github.io/airports-api/icao/';
 	const RULES_API =
-		'https://raw.githubusercontent.com/RHGDEV/Artcc-Scripts/refs/heads/main/rules/KMEM.json';
+		'https://raw.githubusercontent.com/RHGDEV/Artcc-Scripts/refs/heads/main/rules/MEM.json';
 	const PLANE_TYPES_API =
 		'https://raw.githubusercontent.com/RHGDEV/Artcc-Scripts/refs/heads/main/rules/PlaneTypes.json';
 	const FALLBACK_DEPARTURE_FREQUENCIES = ['122.8', 'OFFLINE'];
