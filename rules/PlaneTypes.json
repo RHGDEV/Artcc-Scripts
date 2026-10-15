@@ -12,5 +12,5 @@
 		"^E2\\d",
 		"^(GLF|GULF|CL|C56|C5|F2|FA|H25|LJ|BE4)"
 	],
-	"prop": ["^(C1|C2|C3|BE\\d|PC\\d|PA\\d|DA\\d|AT\\d|DHC|DH8|SF34|JS3)"]
+	"prop": ["^(C1|C2|C3|BE\\d|PC\\d|PA\\d|DA\\d|AT\\d|DHC|DH8|SF34|JS3|TBM9)"]
 }
