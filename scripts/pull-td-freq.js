@@ -1,49 +1,66 @@
-const https = require('https');
-
+const DEPARTURE_AIRPORT = 'KMEM';
 const API_URL = 'https://data.vatsim.net/v3/vatsim-data.json';
+const VATSIM_AIRPORT_API = 'https://my.vatsim.net/api/v2/aip/airports/';
+let onlineFrequencyRequest = null;
 
-function getfreqList() {
-	return new Promise((resolve, reject) => {
-		https
-			.get(API_URL, (res) => {
-				let data = '';
+async function getAirportStations() {
+	const response = await fetch(`${VATSIM_AIRPORT_API}${DEPARTURE_AIRPORT}`);
 
-				res.on('data', (chunk) => {
-					data += chunk;
-				});
+	if (!response.ok) {
+		throw new Error(`Airport request failed (${response.status}).`);
+	}
 
-				res.on('end', () => {
-					try {
-						const vatsim = JSON.parse(data);
-
-						const frequencies = vatsim.controllers
-							.filter((controller) => {
-								const callsign = controller.callsign.toUpperCase();
-
-								return (
-									callsign.startsWith('MEM_') &&
-									Number(controller.facility) >= 5
-								);
-							})
-							.sort(
-								(a, b) =>
-									Number(a.facility) - Number(b.facility) ||
-									a.callsign.localeCompare(b.callsign),
-							)
-							.map((controller) => controller.frequency);
-
-						resolve(frequencies);
-					} catch (error) {
-						reject(new Error('Failed to parse VATSIM data.', { cause: error }));
-					}
-				});
-			})
-			.on('error', (error) => {
-				reject(new Error('Failed to connect to VATSIM.', { cause: error }));
-			});
-	});
+	const { data } = await response.json();
+	return data?.stations ?? [];
 }
 
-getfreqList()
-	.then((frequencies) => console.log(JSON.stringify(frequencies)))
-	.catch((error) => console.error(error.message));
+function normalizeStationCallsign(callsign) {
+	const parts = callsign.toUpperCase().split('_');
+	return parts.length >= 2
+		? `${parts[0]}_${parts.at(-1)}`
+		: callsign.toUpperCase();
+}
+
+async function getOnlineAirportFrequency() {
+	if (!onlineFrequencyRequest) {
+		onlineFrequencyRequest = Promise.all([
+			getAirportStations(),
+			fetch(API_URL, { cache: 'no-store' }).then((response) => {
+				if (!response.ok) {
+					throw new Error(`VATSIM data request failed (${response.status}).`);
+				}
+
+				return response.json();
+			}),
+		])
+			.then(([stations, vatsim]) => {
+				const airportCallsigns = new Set(
+					stations
+						.map((station) => station.callsign)
+						.filter(Boolean)
+						.map(normalizeStationCallsign),
+				);
+
+				const onlineControllers = vatsim.controllers.filter((controller) =>
+					airportCallsigns.has(normalizeStationCallsign(controller.callsign)),
+				);
+
+				return onlineControllers.at(0)?.frequency ?? null;
+			})
+			.catch((error) => {
+				onlineFrequencyRequest = null;
+				throw error;
+			});
+	}
+
+	return onlineFrequencyRequest;
+}
+
+getOnlineAirportFrequency()
+	.then((frequency) =>
+		console.log(frequency ?? 'No online airport controller.'),
+	)
+	.catch((error) => {
+		console.error(error.message);
+		process.exitCode = 1;
+	});

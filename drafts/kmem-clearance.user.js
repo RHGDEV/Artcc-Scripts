@@ -16,6 +16,7 @@
 	const PREFIX = '[vTDLS Validator]';
 	const VATSIM_API = 'https://data.vatsim.net/v3/vatsim-data.json';
 	const AIRPORT_API = 'https://ryanburnette.github.io/airports-api/icao/';
+	const VATSIM_AIRPORT_API = 'https://my.vatsim.net/api/v2/aip/airports/';
 	let AIRPORT_CODE = '';
 	let DEPARTURE_AIRPORT = '';
 	let RULES_API = '';
@@ -51,6 +52,11 @@
 	// Normalize text for case-insensitive comparisons.
 	function upper(value) {
 		return clean(value).toUpperCase();
+	}
+
+	function normalizeStationCallsign(callsign) {
+		const parts = upper(callsign).split('_');
+		return parts.length >= 2 ? `${parts[0]}_${parts.at(-1)}` : upper(callsign);
 	}
 
 	// Extract the airline's ICAO prefix from a callsign.
@@ -230,33 +236,42 @@
 	}
 
 	// Find the highest active departure frequency for the configured center.
+	async function getAirportStations() {
+		const response = await fetch(`${VATSIM_AIRPORT_API}${DEPARTURE_AIRPORT}`);
+
+		if (!response.ok) {
+			throw new Error(`Airport station request failed (${response.status}).`);
+		}
+
+		const { data } = await response.json();
+		return data?.stations ?? [];
+	}
+
 	async function getOnlineDepartureFrequency() {
 		if (!departureFrequencyRequest) {
-			departureFrequencyRequest = fetch(VATSIM_API, { cache: 'no-store' })
-				.then((response) => {
+			departureFrequencyRequest = Promise.all([
+				getAirportStations(),
+				fetch(VATSIM_API, { cache: 'no-store' }).then((response) => {
 					if (!response.ok) {
 						throw new Error(`VATSIM data request failed (${response.status}).`);
 					}
 
 					return response.json();
-				})
-				.then((vatsim) => {
-					const controller = vatsim.controllers
-						.filter((item) => {
-							const callsign = upper(item.callsign);
-							const facility = Number(item.facility);
-							const centerCode = upper(activeRules?.centerCode);
+				}),
+			])
+				.then(([stations, vatsim]) => {
+					const airportCallsigns = new Set(
+						stations
+							.map((station) => station.callsign)
+							.filter(Boolean)
+							.map(normalizeStationCallsign),
+					);
 
-							return callsign.startsWith(`${centerCode}_`) && facility >= 5;
-						})
-						.sort(
-							(a, b) =>
-								Number(a.facility) - Number(b.facility) ||
-								upper(a.callsign).localeCompare(upper(b.callsign)),
-						)
-						.at(0);
+					const onlineControllers = vatsim.controllers.filter((controller) =>
+						airportCallsigns.has(normalizeStationCallsign(controller.callsign)),
+					);
 
-					return controller?.frequency || null;
+					return onlineControllers.at(0)?.frequency ?? null;
 				})
 				.catch((error) => {
 					departureFrequencyRequest = null;
@@ -375,7 +390,7 @@
 			element.style.color = '#eab308';
 		}
 
-		element.style.fontWeight = '700';
+		element.style.fontWeight = '800';
 
 		if (title) {
 			element.title = title;
@@ -959,13 +974,14 @@
 			const departureBase = getSIDBase(restriction?.[0] || sidBase);
 			const expectedTransition =
 				activeRules.rvsmOnly.transitions[departureBase] || null;
+			const expectedDeparture =
+				activeRules.rvsmOnly.departure +
+				getSIDCycle(activeRules.rvsmOnly.departure);
 
 			return {
 				type: 'RNAV',
-				validDeparture: upper(sid) === activeRules.rvsmOnly.departure,
-				expectedDeparture:
-					activeRules.rvsmOnly.departure +
-					getSIDCycle(activeRules.rvsmOnly.departure),
+				validDeparture: upper(sid) === upper(expectedDeparture),
+				expectedDeparture,
 				expectedTransition,
 				validTransition: expectedTransition
 					? upper(transition) === upper(expectedTransition)
@@ -1143,7 +1159,11 @@
 			parsedSID.transition,
 			equipment,
 		);
-		if (departureRule.expectedDeparture || !sidCurrent) {
+		if (
+			!sidCurrent ||
+			(departureRule.expectedDeparture && !departureRule.validDeparture) ||
+			(departureRule.expectedTransition && !departureRule.validTransition)
+		) {
 			showHint(
 				sidElements.sidElement || sidElements.transitionElement,
 				`${getCurrentSID(departureRule.expectedDeparture) || 'UNKNOWN'} ${departureRule.expectedTransition || 'UNKNOWN'}`,
