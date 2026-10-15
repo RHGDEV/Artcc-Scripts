@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         KMEM vTDLS Flight Plan Validator
+// @name         vTDLS Flight Plan Validator
 // @namespace    https://artcc.huskey.cc/tools/vtdls-validator/
-// @version      0.5.0
+// @version      1.0.0
 // @description  KMEM vTDLS flight plan validator using Vector ARTCC KMEM rules
 // @match        https://tdls.virtualnas.net/*
 // @grant        none
@@ -16,98 +16,27 @@
 	const PREFIX = '[vTDLS Validator]';
 	const VATSIM_API = 'https://data.vatsim.net/v3/vatsim-data.json';
 	const AIRPORT_API = 'https://ryanburnette.github.io/airports-api/icao/';
-	const RULES_API =
-		'https://raw.githubusercontent.com/RHGDEV/Artcc-Scripts/refs/heads/main/rules/MEM.json';
+	const VATSIM_AIRPORT_API = 'https://my.vatsim.net/api/v2/aip/airports/';
+	let AIRPORT_CODE = '';
+	let DEPARTURE_AIRPORT = '';
+	let RULES_API = '';
 	const PLANE_TYPES_API =
 		'https://raw.githubusercontent.com/RHGDEV/Artcc-Scripts/refs/heads/main/rules/PlaneTypes.json';
+	const AIRLINE_CODES_API =
+		'https://raw.githubusercontent.com/npow/airline-codes/refs/heads/master/airlines.json';
 	const FALLBACK_DEPARTURE_FREQUENCIES = ['122.8', 'OFFLINE'];
 
-	/*
-	 * ============================================================
-	 * VECTOR ARTCC KMEM RULES
-	 * ============================================================
-	 */
-
-	const MEM_RULES = {
-		jetInitialAltitude: 5000,
-		propInitialAltitude: 3000,
-		aircraftTypes: {
-			jet: [
-				'^A[1234]\\d\\d$',
-				'^A\\d{2}N$',
-				'^B\\d{3}$',
-				'^B7[0-9]{2}$',
-				'^B[3579][0-9][A-Z]$',
-				'^MD\\d',
-				'^DC\\d',
-				'^CRJ',
-				'^E1\\d',
-				'^E2\\d',
-				'^(GLF|GULF|CL|C56|C5|F2|FA|H25|LJ|BE4)',
-			],
-			prop: ['^(C1|C2|C3|BE\\d|PC\\d|PA\\d|DA\\d|AT\\d|DHC|DH8|SF34|JS3)'],
-		},
-
-		restrictedDepartures: {
-			AUTMN: ['CHLDR', 'ANSWA'],
-			BINKY: ['PIEPE', 'IBUFY'],
-			GENEH: ['CRSON', 'HUMMS'],
-			GMBUD: ['BBKING', 'KERMI'],
-			GRRIZ: ['JTEEE', 'ODATE'],
-			HOTRD: ['ZUMIT', 'JTEEE'],
-			NIKEI: ['ZUMIT', 'FOXOM'],
-			OLEMS: ['PIEPE', 'IBUFY'],
-		},
-
-		rvsmOnly: {
-			departure: 'ELVIS4',
-
-			transitions: {
-				AZONE: 'ETWOO',
-				BBKND: 'ETREE',
-				CHLDR: 'WONEE',
-				CRSON: 'NFOUR',
-				DUCKZ: 'WTWOO',
-				GOETZ: 'EONEE',
-				JTEEE: 'NTWOO',
-				PIEPE: 'STWOO',
-				SELPH: 'NTREE',
-				ZUMIT: 'WTREE',
-				AUTMN: 'SFOUR',
-				BINKY: 'STREE',
-				GENEH: 'NFIVE',
-				GMBUD: 'EFOUR',
-				GRRIZ: 'NRONE',
-				HOTRD: 'WFIVE',
-				NIKEI: 'WFOUR',
-				OLEMS: 'SONEI',
-			},
-		},
-
-		/*
-		 * SID cycle information from the Vector validator.
-		 */
-		currentCycles: {
-			AZONE: 7,
-			BBKING: 7,
-			CHLDR: 5,
-			CRSON: 7,
-			DUCKZ: 5,
-			ELVIS: 4,
-			GOETZ: 7,
-			JTEEE: 5,
-			PIEPE: 6,
-			SELPH: 7,
-			ZUMIT: 5,
-		},
-	};
-
 	const airportCache = new Map();
+	const airlineCache = new Map();
 	let departureFrequencyRequest = null;
-	let activeRules = MEM_RULES;
-	let activeAircraftTypes = MEM_RULES.aircraftTypes;
+	let activeRules = null;
+	let activeAircraftTypes = null;
 	let rulesRequest = null;
 	let planeTypesRequest = null;
+	let airlineCodesRequest = null;
+	let loadNotification = null;
+	let scanInProgress = false;
+	let scanRequested = false;
 
 	/*
 	 * ============================================================
@@ -115,29 +44,89 @@
 	 * ============================================================
 	 */
 
+	// Normalize optional text to a single trimmed line.
 	function clean(value) {
 		return (value || '').replace(/\s+/g, ' ').trim();
 	}
 
+	// Normalize text for case-insensitive comparisons.
 	function upper(value) {
 		return clean(value).toUpperCase();
 	}
 
+	function normalizeStationCallsign(callsign) {
+		const parts = upper(callsign).split('_');
+		return parts.length >= 2 ? `${parts[0]}_${parts.at(-1)}` : upper(callsign);
+	}
+
+	// Extract the airline's ICAO prefix from a callsign.
+	function getAirlineCode(callsign) {
+		const code = upper(callsign).match(/^[A-Z]{3}/)?.[0];
+
+		return code || null;
+	}
+
+	// Normalize frequency formatting before comparing values.
 	function normalizeFrequency(value) {
 		return clean(value)
 			.replace(/(\.\d*?[1-9])0+$/, '$1')
 			.replace(/\.0+$/, '');
 	}
 
+	// Write a namespaced informational message to the console.
 	function log(...args) {
 		console.log(PREFIX, ...args);
 	}
 
+	// Write a namespaced warning message to the console.
 	function warn(...args) {
 		console.warn(PREFIX, ...args);
 	}
 
+	// Check whether text contains a route departing from the active airport.
+	function isDepartureRoute(value) {
+		return new RegExp(`${DEPARTURE_AIRPORT}\\s*\\.`, 'i').test(clean(value));
+	}
+
+	// Read the airport code from the TDLS URL and build the rules endpoint.
+	function updateAirportContext() {
+		const airportCode =
+			location.pathname.match(/^\/([A-Za-z]{3})(?:\/|$)/)?.[1].toUpperCase() ||
+			'';
+
+		if (!airportCode) {
+			return false;
+		}
+
+		AIRPORT_CODE = airportCode;
+		DEPARTURE_AIRPORT = `K${airportCode}`;
+		RULES_API = `https://raw.githubusercontent.com/RHGDEV/Artcc-Scripts/refs/heads/main/rules/${airportCode}.json`;
+
+		return true;
+	}
+
+	// Wait until the TDLS URL exposes an airport code.
+	function waitForAirportContext() {
+		return new Promise((resolve) => {
+			const check = () => {
+				if (updateAirportContext()) {
+					resolve();
+					return;
+				}
+
+				setTimeout(check, 250);
+			};
+
+			check();
+		});
+	}
+
+	// Fetch and activate the rules for the selected airport.
 	async function loadRemoteRules() {
+		if (!AIRPORT_CODE) {
+			throw new Error('Airport code is missing from the TDLS URL.');
+		}
+
 		if (!rulesRequest) {
 			rulesRequest = fetch(RULES_API, { cache: 'no-store' })
 				.then((response) => {
@@ -152,14 +141,7 @@
 						throw new Error('Remote rules returned an invalid object.');
 					}
 
-					activeRules = {
-						...MEM_RULES,
-						...remoteRules,
-						currentCycles:
-							remoteRules.currentCycles ||
-							remoteRules.sidCycles ||
-							MEM_RULES.currentCycles,
-					};
+					activeRules = remoteRules;
 				});
 		}
 
@@ -167,10 +149,11 @@
 			await rulesRequest;
 		} catch (error) {
 			rulesRequest = null;
-			warn('Unable to load remote rules. Using local defaults.', error);
+			throw error;
 		}
 	}
 
+	// Fetch and activate the shared aircraft classification rules.
 	async function loadRemotePlaneTypes() {
 		if (!planeTypesRequest) {
 			planeTypesRequest = fetch(PLANE_TYPES_API, { cache: 'no-store' })
@@ -198,40 +181,97 @@
 			await planeTypesRequest;
 		} catch (error) {
 			planeTypesRequest = null;
-			warn('Unable to load remote plane types. Using local defaults.', error);
+			throw error;
 		}
+	}
+
+	// Fetch and cache airline names and telephony callsigns by ICAO code.
+	async function loadAirlineCodes() {
+		if (!airlineCodesRequest) {
+			airlineCodesRequest = fetch(AIRLINE_CODES_API, { cache: 'force-cache' })
+				.then((response) => {
+					if (!response.ok) {
+						throw new Error(
+							`Airline codes request failed (${response.status}).`,
+						);
+					}
+
+					return response.json();
+				})
+				.then((data) => {
+					const records = Array.isArray(data)
+						? data
+						: Array.isArray(data?.airlines)
+							? data.airlines
+							: Object.values(data || {});
+
+					for (const record of records) {
+						const code = upper(record?.icao || record?.icao_code);
+						const name = clean(
+							record?.name || record?.airline || record?.airline_name,
+						);
+						const callsign = upper(
+							record?.callsign || record?.call_sign || record?.telephony,
+						);
+
+						if (code && name) {
+							airlineCache.set(code, { name, callsign });
+						}
+					}
+				})
+				.catch((error) => {
+					airlineCodesRequest = null;
+					warn('Unable to load airline codes:', error);
+				});
+		}
+
+		await airlineCodesRequest;
+	}
+
+	// Return cached airline information for a callsign.
+	function getAirlineInfo(callsign) {
+		const code = getAirlineCode(callsign);
+
+		return code ? { code, ...airlineCache.get(code) } : null;
+	}
+
+	// Find the highest active departure frequency for the configured center.
+	async function getAirportStations() {
+		const response = await fetch(`${VATSIM_AIRPORT_API}${DEPARTURE_AIRPORT}`);
+
+		if (!response.ok) {
+			throw new Error(`Airport station request failed (${response.status}).`);
+		}
+
+		const { data } = await response.json();
+		return data?.stations ?? [];
 	}
 
 	async function getOnlineDepartureFrequency() {
 		if (!departureFrequencyRequest) {
-			departureFrequencyRequest = fetch(VATSIM_API, { cache: 'no-store' })
-				.then((response) => {
+			departureFrequencyRequest = Promise.all([
+				getAirportStations(),
+				fetch(VATSIM_API, { cache: 'no-store' }).then((response) => {
 					if (!response.ok) {
 						throw new Error(`VATSIM data request failed (${response.status}).`);
 					}
 
 					return response.json();
-				})
-				.then((vatsim) => {
-					const controller = vatsim.controllers
-						.filter((item) => {
-							const callsign = upper(item.callsign);
+				}),
+			])
+				.then(([stations, vatsim]) => {
+					const airportCallsigns = new Set(
+						stations
+							.map((station) => station.callsign)
+							.filter(Boolean)
+							.map(normalizeStationCallsign),
+					);
 
-							return (
-								(callsign.startsWith('ZME_') ||
-									callsign.startsWith('MXX_') ||
-									callsign.startsWith('MEM_')) &&
-								!callsign.endsWith('_GND')
-							);
-						})
-						.sort(
-							(a, b) =>
-								Number(a.facility) - Number(b.facility) ||
-								upper(a.callsign).localeCompare(upper(b.callsign)),
-						)
-						.at(0);
+					const onlineControllers = vatsim.controllers.filter((controller) =>
+						airportCallsigns.has(normalizeStationCallsign(controller.callsign)),
+					);
 
-					return controller?.frequency || null;
+					return onlineControllers.at(0)?.frequency ?? null;
 				})
 				.catch((error) => {
 					departureFrequencyRequest = null;
@@ -242,6 +282,7 @@
 		return departureFrequencyRequest;
 	}
 
+	// Fetch and cache airport coordinates and display metadata.
 	async function getAirportInfo(icao) {
 		const code = upper(icao);
 
@@ -289,6 +330,7 @@
 		}
 	}
 
+	// Determine east/west direction from the two airport longitudes.
 	function getDirection(departureAirport, destinationAirport) {
 		if (!departureAirport || !destinationAirport) {
 			return null;
@@ -324,6 +366,7 @@
 	 * Yellow = warning / needs verification
 	 */
 
+	// Apply validation styling and an optional explanation to an element.
 	function mark(element, status, title) {
 		if (!element) return;
 
@@ -347,13 +390,14 @@
 			element.style.color = '#eab308';
 		}
 
-		element.style.fontWeight = '700';
+		element.style.fontWeight = '800';
 
 		if (title) {
 			element.title = title;
 		}
 	}
 
+	// Restore an element's original inline styles and tooltip.
 	function restore(element) {
 		if (!element) return;
 
@@ -371,13 +415,16 @@
 		element.removeAttribute('title');
 	}
 
+	// Remove validator-generated UI and restore every field in a card.
 	function restoreCard(card) {
 		card
 			.querySelectorAll('[data-kmem-altitude-hints="true"]')
 			.forEach((element) => element.remove());
 
 		card
-			.querySelectorAll('[data-kmem-selection-hint="true"]')
+			.querySelectorAll(
+				'[data-kmem-selection-hint="true"], [data-kmem-transition-hint="true"]',
+			)
 			.forEach((element) => element.remove());
 
 		card.querySelectorAll('[data-kmem-field]').forEach((element) => {
@@ -386,6 +433,7 @@
 		});
 	}
 
+	// Mark a DOM element as owned by the validator for later cleanup.
 	function register(element) {
 		if (element) {
 			element.dataset.kmemField = 'true';
@@ -394,31 +442,20 @@
 		return element;
 	}
 
-	function showSelectionHint(
-		departureElement,
-		transitionElement,
-		correctDeparture,
-		correctTransition,
-	) {
-		const values = [];
-
-		if (correctDeparture && correctTransition) {
-			values.push(`${correctDeparture} ${correctTransition}`);
-		}
-
-		if (!values.length) {
+	// Display a styled validator hint after a related form element.
+	function showHint(anchor, text, datasetKey) {
+		if (!anchor || !text) {
 			return;
 		}
 
 		const hint = document.createElement('span');
-		hint.dataset.kmemSelectionHint = 'true';
-		hint.textContent = values.join(' | ');
+		hint.dataset[datasetKey] = 'true';
+		hint.textContent = text;
 		hint.style.marginLeft = '6px';
-		hint.style.color = '#ef4444';
-		hint.style.fontWeight = '700';
+		hint.style.color = '#d86464';
+		hint.style.fontWeight = '300';
 
-		const anchor = transitionElement || departureElement;
-		anchor?.after(hint);
+		anchor.after(hint);
 	}
 
 	/*
@@ -429,41 +466,28 @@
 	 * DO NOT depend on styled-components classes.
 	 */
 
-	function findFlightCards() {
-		const cards = new Set();
+	// Find the single visible flight-card container.
+	function findFlightCard() {
+		const routeElement = [...document.querySelectorAll('div')]
+			.reverse()
+			.find((div) => isDepartureRoute(div.textContent));
 
-		for (const div of document.querySelectorAll('div')) {
-			const text = clean(div.textContent);
+		let current = routeElement;
 
-			if (!/^KMEM\./i.test(text)) {
-				continue;
+		for (let depth = 0; depth < 10 && current; depth++) {
+			const aircraft = [...current.querySelectorAll('span')].find((span) =>
+				/^[A-Z0-9]{2,8}\/[A-Z]$/i.test(clean(span.textContent)),
+			);
+			const hasControls = current.querySelector('select, input, button');
+
+			if (aircraft && hasControls) {
+				return current;
 			}
 
-			let current = div;
-
-			for (let i = 0; i < 10 && current; i++) {
-				const currentText = clean(current.textContent);
-
-				const aircraft = [...current.querySelectorAll('span')].find((span) =>
-					/^[A-Z0-9]{2,8}\/[A-Z]$/i.test(clean(span.textContent)),
-				);
-
-				const selects = current.querySelectorAll('select').length;
-
-				const cancel = [...current.querySelectorAll('button')].some(
-					(button) => upper(button.textContent) === 'CANCEL',
-				);
-
-				if (aircraft && selects >= 5 && cancel && /KMEM\./i.test(currentText)) {
-					cards.add(current);
-					break;
-				}
-
-				current = current.parentElement;
-			}
+			current = current.parentElement;
 		}
 
-		return [...cards];
+		return null;
 	}
 
 	/*
@@ -472,10 +496,11 @@
 	 * ============================================================
 	 */
 
+	// Read the callsign and its source element from a flight card.
 	function getCallsign(card) {
-		const routeElement = [...card.querySelectorAll('div')].find((div) =>
-			/^KMEM\./i.test(clean(div.textContent)),
-		);
+		const routeElement = [...card.querySelectorAll('div')]
+			.reverse()
+			.find((div) => isDepartureRoute(div.textContent));
 
 		if (!routeElement) {
 			return {
@@ -513,6 +538,7 @@
 	 * ============================================================
 	 */
 
+	// Read the aircraft type and equipment suffix from a flight card.
 	function getAircraft(card) {
 		const element = [...card.querySelectorAll('span')].find((span) =>
 			/^[A-Z0-9]{2,8}\/[A-Z]$/i.test(clean(span.textContent)),
@@ -553,6 +579,7 @@
 	 * /L is equipment and MUST NOT determine jet/prop.
 	 */
 
+	// Classify an aircraft using the active jet and prop regex lists.
 	function getAircraftType(type) {
 		const t = upper(type);
 		const matches = (patterns) =>
@@ -577,6 +604,7 @@
 	 * ============================================================
 	 */
 
+	// Map an equipment suffix to RVSM, RNAV, and GNSS capabilities.
 	function getEquipment(equipment) {
 		const definitions = {
 			'/W': {
@@ -625,10 +653,11 @@
 	 * ============================================================
 	 */
 
+	// Read the route text and its source element from a flight card.
 	function getRoute(card) {
-		const element = [...card.querySelectorAll('div')].find((div) =>
-			/^KMEM\./i.test(clean(div.textContent)),
-		);
+		const element = [...card.querySelectorAll('div')]
+			.reverse()
+			.find((div) => isDepartureRoute(div.textContent));
 
 		return {
 			value: element ? clean(element.textContent) : '',
@@ -636,6 +665,7 @@
 		};
 	}
 
+	// Extract the destination airport from the final route segment.
 	function getDestination(route) {
 		const parts = upper(route).split('.').map(clean).filter(Boolean);
 
@@ -645,62 +675,25 @@
 		return /^[A-Z]{4}$/.test(destination) ? destination : '';
 	}
 
+	// Build valid hemispheric flight levels for a direction.
 	function getValidAltitudes(direction) {
-		const altitudes = [];
+		const lowerLevels = Array.from(
+			{ length: 12 },
+			(_, index) => 180 + index * 20,
+		);
 
 		if (direction === 'west') {
-			for (let flightLevel = 0; flightLevel <= 400; flightLevel += 20) {
-				altitudes.push(flightLevel);
-			}
-
-			for (let flightLevel = 430; flightLevel <= 600; flightLevel += 20) {
-				altitudes.push(flightLevel);
-			}
+			return [...lowerLevels, 430, 470];
 		}
 
 		if (direction === 'east') {
-			for (let flightLevel = 10; flightLevel <= 390; flightLevel += 20) {
-				altitudes.push(flightLevel);
-			}
-
-			altitudes.push(410);
-
-			for (let flightLevel = 450; flightLevel <= 610; flightLevel += 20) {
-				altitudes.push(flightLevel);
-			}
+			return lowerLevels.map((level) => level + 10).concat(450, 490);
 		}
 
-		return altitudes;
+		return [];
 	}
 
-	function showNearestAltitudes(element, altitudes) {
-		if (!element) {
-			return;
-		}
-
-		const existing = element.parentElement.querySelector(
-			'[data-kmem-altitude-hints="true"]',
-		);
-
-		if (existing) {
-			existing.remove();
-		}
-
-		if (altitudes.length !== 2) {
-			return;
-		}
-
-		const hint = document.createElement('span');
-		hint.textContent = `${altitudes[0]} OR ${altitudes[1]}`;
-		hint.dataset.kmemAltitudeHints = 'true';
-		hint.style.fontWeight = '400';
-		hint.style.marginLeft = '6px';
-		hint.style.color = '#ef4444';
-		hint.style.fontWeight = '700';
-
-		element.after(hint);
-	}
-
+	// Find the closest valid flight levels under an optional ceiling.
 	function getNearestValidAltitudes(
 		flightLevel,
 		direction,
@@ -729,6 +722,7 @@
 	 * ============================================================
 	 */
 
+	// Parse the SID and transition from a dot-separated route.
 	function parseSID(route) {
 		const parts = upper(route).split('.').map(clean).filter(Boolean);
 
@@ -759,6 +753,7 @@
 	 * ============================================================
 	 */
 
+	// Locate the SID and transition controls associated with a route.
 	function getSIDSelects(card, parsedSID) {
 		const selects = [...card.querySelectorAll('select')];
 
@@ -766,28 +761,29 @@
 		let transitionElement = null;
 
 		for (const select of selects) {
-			const value = upper(
-				select.value || select.options?.[select.selectedIndex]?.text,
-			);
-			const optionValues = [...select.options].map((option) =>
-				upper(option.value || option.text),
-			);
+			const selectedOption = select.options?.[select.selectedIndex];
+			const selectedValues = [
+				select.value,
+				selectedOption?.value,
+				selectedOption?.text,
+			].map(upper);
+			const optionValues = [...select.options].flatMap((option) => [
+				upper(option.value),
+				upper(option.text),
+			]);
 
-			if (parsedSID.sid && value === upper(parsedSID.sid)) {
+			if (
+				parsedSID.sid &&
+				(selectedValues.includes(upper(parsedSID.sid)) ||
+					optionValues.includes(upper(parsedSID.sid)))
+			) {
 				sidElement = select;
-			}
-
-			if (parsedSID.sid && optionValues.includes(upper(parsedSID.sid))) {
-				sidElement = select;
-			}
-
-			if (parsedSID.transition && value === upper(parsedSID.transition)) {
-				transitionElement = select;
 			}
 
 			if (
 				parsedSID.transition &&
-				optionValues.includes(upper(parsedSID.transition))
+				(selectedValues.includes(upper(parsedSID.transition)) ||
+					optionValues.includes(upper(parsedSID.transition)))
 			) {
 				transitionElement = select;
 			}
@@ -799,6 +795,7 @@
 		};
 	}
 
+	// Read the selected departure frequency from a flight card.
 	function getDepartureFrequency(card) {
 		const label = [...card.querySelectorAll('span')].find((span) =>
 			upper(span.textContent).startsWith('DEP FREQ'),
@@ -817,6 +814,7 @@
 	 * ============================================================
 	 */
 
+	// Read the filed altitude from the card's numeric value pairs.
 	function getFiledAltitude(card) {
 		/*
 		 * vTDLS has two numeric-pair rows:
@@ -876,6 +874,7 @@
 	 * ============================================================
 	 */
 
+	// Read the selected initial-altitude value in feet.
 	function getInitialAltitude(card) {
 		const select = [...card.querySelectorAll('select')].find((select) => {
 			const value = upper(
@@ -908,16 +907,19 @@
 	 * ============================================================
 	 */
 
+	// Remove the numeric cycle suffix from a SID name.
 	function getSIDBase(sid) {
 		return upper(sid).replace(/\d+$/, '');
 	}
 
+	// Look up the configured cycle for a SID base.
 	function getSIDCycle(sid) {
 		const base = getSIDBase(sid);
 
-		return activeRules.currentCycles[base] ?? null;
+		return activeRules.sidCycles[base] ?? null;
 	}
 
+	// Return a SID with its configured current cycle.
 	function getCurrentSID(sid) {
 		const base = getSIDBase(sid);
 		const cycle = getSIDCycle(sid);
@@ -925,6 +927,7 @@
 		return cycle === null ? sid : `${base}${cycle}`;
 	}
 
+	// Check whether a SID uses its configured current cycle.
 	function isCurrentSID(sid) {
 		const base = getSIDBase(sid);
 		const cycle = getSIDCycle(sid);
@@ -960,21 +963,25 @@
 	 * ============================================================
 	 */
 
+	// Resolve restricted and non-RNAV departure requirements.
 	function getDepartureRule(sid, transition, equipment) {
 		const sidBase = getSIDBase(sid);
 
-		const restriction = MEM_RULES.restrictedDepartures[sidBase];
+		const restriction = activeRules.restrictedDepartures[sidBase];
 
 		if (!equipment.rnav) {
 			/* Resolve restricted departures before finding the ELVIS gate. */
 			const departureBase = getSIDBase(restriction?.[0] || sidBase);
 			const expectedTransition =
-				MEM_RULES.rvsmOnly.transitions[departureBase] || null;
+				activeRules.rvsmOnly.transitions[departureBase] || null;
+			const expectedDeparture =
+				activeRules.rvsmOnly.departure +
+				getSIDCycle(activeRules.rvsmOnly.departure);
 
 			return {
 				type: 'RNAV',
-				validDeparture: upper(sid) === MEM_RULES.rvsmOnly.departure,
-				expectedDeparture: MEM_RULES.rvsmOnly.departure,
+				validDeparture: upper(sid) === upper(expectedDeparture),
+				expectedDeparture,
 				expectedTransition,
 				validTransition: expectedTransition
 					? upper(transition) === upper(expectedTransition)
@@ -1023,6 +1030,7 @@
 	 * rather than falsely declaring an altitude valid/invalid.
 	 */
 
+	// Parse a flight-level value into a number.
 	function parseFlightLevel(value) {
 		const number = parseInt(value, 10);
 
@@ -1034,40 +1042,34 @@
 	}
 
 	/*
-	 * Standard IFR hemispheric direction:
-	 *
-	 * Eastbound: odd
-	 * Westbound: even
-	 *
-	 * We deliberately do not call this a definitive KMEM
-	 * direction unless we can determine the destination.
-	 */
-
-	function altitudeParityCorrect(fl) {
-		if (fl === null) {
-			return null;
-		}
-
-		return fl % 2 === 1;
-	}
-
-	/*
 	 * ============================================================
 	 * VALIDATE CARD
 	 * ============================================================
 	 */
 
+	// Validate one flight card and apply field-level feedback.
 	async function validateCard(card) {
 		restoreCard(card);
 
 		const callsign = getCallsign(card);
+		const airline = getAirlineInfo(callsign.value);
+
+		if (callsign.element) {
+			if (airline?.name) {
+				const telephony = airline.callsign ? ` (${airline.callsign})` : '';
+				callsign.element.title = `${airline.code} - ${airline.name}${telephony}`;
+			} else {
+				callsign.element.removeAttribute('title');
+			}
+		}
+
 		const aircraft = getAircraft(card);
 		const route = getRoute(card);
 
 		const destination = getDestination(route.value);
 
 		const [departureAirport, destinationAirport] = await Promise.all([
-			getAirportInfo('KMEM'),
+			getAirportInfo(DEPARTURE_AIRPORT),
 			getAirportInfo(destination),
 		]).catch((error) => {
 			warn('Airport lookup failed:', error);
@@ -1117,9 +1119,9 @@
 
 		const expectedInitialAltitude =
 			aircraftCategory === 'JET'
-				? activeRules.jetInitialAltitude
+				? activeRules.initialAltitudes.jets
 				: aircraftCategory === 'PROP'
-					? activeRules.propInitialAltitude
+					? activeRules.initialAltitudes.props
 					: null;
 
 		const initialAltitudeValid =
@@ -1157,18 +1159,27 @@
 			parsedSID.transition,
 			equipment,
 		);
-
-		showSelectionHint(
-			sidElements.sidElement,
-			sidElements.transitionElement,
-			getCurrentSID(departureRule.expectedDeparture),
-			departureRule.expectedTransition,
-		);
-
+		if (
+			!sidCurrent ||
+			(departureRule.expectedDeparture && !departureRule.validDeparture) ||
+			(departureRule.expectedTransition && !departureRule.validTransition)
+		) {
+			showHint(
+				sidElements.sidElement || sidElements.transitionElement,
+				`${getCurrentSID(departureRule.expectedDeparture) || 'UNKNOWN'} ${departureRule.expectedTransition || 'UNKNOWN'}`,
+				'kmemSelectionHint',
+			);
+		} else {
+			showHint(
+				sidElements.sidElement || sidElements.transitionElement,
+				'',
+				'kmemSelectionHint',
+			);
+		}
 		const filedFlightLevel = parseFlightLevel(filedAltitude.value);
 
 		const nonRvsmCeilingExceeded =
-			!equipment.rvsm && filedFlightLevel !== null && filedFlightLevel > 290;
+			!equipment.rvsm && filedFlightLevel !== null && filedFlightLevel >= 290;
 
 		const filedAltitudeValid =
 			!nonRvsmCeilingExceeded &&
@@ -1301,18 +1312,23 @@
 		/* Filed altitude. */
 
 		if (filedAltitude.element) {
-			showNearestAltitudes(
+			showHint(
 				filedAltitude.element,
-				filedAltitudeValid === false ? nearestValidAltitudes : [],
+				nonRvsmCeilingExceeded
+					? 'FL280 MAX'
+					: filedAltitudeValid === false && nearestValidAltitudes.length === 2
+						? `${nearestValidAltitudes[0]}/${nearestValidAltitudes[1]}`
+						: '',
+				'kmemAltitudeHints',
 			);
 
 			const altitudeTitle = nonRvsmCeilingExceeded
-				? `Filed altitude FL${filedAltitude.value} is invalid. Non-RVSM aircraft must remain at or below FL290.`
+				? `Filed altitude FL${filedAltitude.value} is invalid. Non-RVSM aircraft must remain below FL290.`
 				: altitudeDirection
 					? filedAltitudeValid
-						? `Filed altitude FL${filedAltitude.value} is valid for ${altitudeDirection}bound traffic.`
-						: `Filed altitude FL${filedAltitude.value} is invalid for ${altitudeDirection}bound traffic. Closest valid altitudes: FL${nearestValidAltitudes[0]} and FL${nearestValidAltitudes[1]}.`
-					: `Filed altitude FL${filedAltitude.value}. Direction for destination ${destination || 'unknown'} could not be determined.`;
+						? `Altitude ${filedAltitude.value} is valid for ${altitudeDirection}bound traffic.`
+						: `Altitude ${filedAltitude.value} is invalid for ${altitudeDirection}bound traffic. Closest valid altitudes: ${nearestValidAltitudes[0]}/${nearestValidAltitudes[1]}.`
+					: `Altitude FL${filedAltitude.value}. Direction for destination ${destination || 'unknown'} could not be determined.`;
 
 			mark(
 				filedAltitude.element,
@@ -1384,15 +1400,36 @@
 	let scanTimer = null;
 
 	async function scan() {
-		const cards = findFlightCards();
+		if (!activeRules || !activeAircraftTypes) {
+			return;
+		}
 
-		log(`Found ${cards.length} flight card(s).`);
+		if (scanInProgress) {
+			scanRequested = true;
+			return;
+		}
 
-		for (const card of cards) {
+		scanInProgress = true;
+
+		try {
+			const card = findFlightCard();
+			if (card === null) {
+				console.log(`No flight card found.`);
+				return;
+			}
+			log(`Found a flight card.`);
+
 			try {
 				await validateCard(card);
 			} catch (error) {
 				console.error(PREFIX, 'Failed to validate flight card:', error);
+			}
+		} finally {
+			scanInProgress = false;
+
+			if (scanRequested) {
+				scanRequested = false;
+				scheduleScan();
 			}
 		}
 	}
@@ -1401,6 +1438,36 @@
 		clearTimeout(scanTimer);
 
 		scanTimer = setTimeout(scan, 1550);
+	}
+
+	function showLoadNotification(message, success, duration = 3000) {
+		loadNotification?.remove();
+
+		const notification = document.createElement('div');
+		loadNotification = notification;
+
+		notification.textContent = message;
+		notification.style.position = 'fixed';
+		notification.style.top = '16px';
+		notification.style.right = '16px';
+		notification.style.zIndex = '2147483647';
+		notification.style.padding = '8px 12px';
+		notification.style.border = `1px solid ${success ? '#22c55e' : '#ef4444'}`;
+		notification.style.borderRadius = '4px';
+		notification.style.background = success ? '#14532d' : '#7f1d1d';
+		notification.style.color = success ? '#dcfce7' : '#fee2e2';
+		notification.style.font = '600 13px sans-serif';
+		notification.style.opacity = '1';
+		notification.style.transition = 'opacity 300ms ease';
+
+		document.body.append(notification);
+
+		if (duration > 0) {
+			setTimeout(() => {
+				notification.style.opacity = '0';
+				setTimeout(() => notification.remove(), 300);
+			}, duration);
+		}
 	}
 
 	/*
@@ -1425,7 +1492,30 @@
 	 * ============================================================
 	 */
 
-	log('KMEM vTDLS validator loaded.');
+	log('KMEM vTDLS validator waiting for airport selection.');
+	showLoadNotification('Waiting for airport selection...', true, 0);
 
-	Promise.all([loadRemoteRules(), loadRemotePlaneTypes()]).then(scan);
+	waitForAirportContext()
+		.then(() =>
+			Promise.all([
+				loadRemoteRules(),
+				loadRemotePlaneTypes(),
+				loadAirlineCodes(),
+			]),
+		)
+		.then(async () => {
+			log(`${DEPARTURE_AIRPORT} validator data loaded.`);
+			await scan();
+			showLoadNotification(
+				`${DEPARTURE_AIRPORT} validator loaded successfully`,
+				true,
+			);
+		})
+		.catch((error) => {
+			console.error(PREFIX, 'Unable to load validator data:', error);
+			showLoadNotification(
+				`${DEPARTURE_AIRPORT || 'Airport'} validator failed to load: ${error.message}`,
+				false,
+			);
+		});
 })();
