@@ -2,9 +2,9 @@
 
 ## Directory
 
-| Name            | Install | Created   | Updated   |
-| --------------- | ------- | --------- | --------- |
-| KMEM Clearances | _Soon_  | 2026.10.8 | 2026.10.8 |
+| Name            | Install                                                                                | Created   | Updated    |
+| --------------- | -------------------------------------------------------------------------------------- | --------- | ---------- |
+| KMEM Clearances | [Install](https://github.com/RHGDEV/Artcc-Scripts/raw/main/src/tdls-clearance.user.js) | 2026.10.8 | 2026.10.15 |
 
 ## Installation
 
