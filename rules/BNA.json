@@ -1,7 +1,6 @@
 {
 	"schemaVersion": 1,
 	"airport": "KBNA",
-	"centerCode": "MEM",
 	"updatedAt": "2026-10-13",
 	"initialAltitudes": {
 		"jets": 3500,

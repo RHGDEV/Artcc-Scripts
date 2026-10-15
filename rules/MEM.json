@@ -1,7 +1,6 @@
 {
 	"schemaVersion": 1,
 	"airport": "KMEM",
-	"centerCode": "MEM",
 	"updatedAt": "2026-10-13",
 	"initialAltitudes": {
 		"jets": 5000,
@@ -21,7 +20,7 @@
 		"departure": "ELVIS",
 		"transitions": {
 			"AZONE": "ETWOO",
-			"BBKND": "ETREE",
+			"BBKNG": "ETREE",
 			"CHLDR": "WONEE",
 			"CRSON": "NFOUR",
 			"DUCKZ": "WTWOO",
