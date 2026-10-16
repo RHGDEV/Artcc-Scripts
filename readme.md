@@ -2,9 +2,9 @@
 
 ## Directory
 
-| Name            | Install                                                                                | Created   | Updated    |
-| --------------- | -------------------------------------------------------------------------------------- | --------- | ---------- |
-| KMEM Clearances | [Install](https://github.com/RHGDEV/Artcc-Scripts/raw/main/src/tdls-clearance.user.js) | 2026.10.8 | 2026.10.15 |
+| Name            | Install                                                                                | Features                                                   | Created   | Updated    |
+| --------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------- | --------- | ---------- |
+| KMEM Clearances | [Install](https://github.com/RHGDEV/Artcc-Scripts/raw/main/src/tdls-clearance.user.js) | [Features](https://artcc.huskey.cc/tools/vtdls-validator/) | 2026.10.8 | 2026.10.15 |
 
 ## Installation
 
