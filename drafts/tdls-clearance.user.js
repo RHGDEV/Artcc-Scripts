@@ -267,9 +267,15 @@
 							.map(normalizeStationCallsign),
 					);
 
-					const onlineControllers = vatsim.controllers.filter((controller) =>
-						airportCallsigns.has(normalizeStationCallsign(controller.callsign)),
-					);
+					const onlineControllers = vatsim.controllers
+						.filter(
+							(controller) =>
+								controller.facility > 4 &&
+								airportCallsigns.has(
+									normalizeStationCallsign(controller.callsign),
+								),
+						)
+						.sort((first, second) => second.facility - first.facility);
 
 					return onlineControllers.at(0)?.frequency ?? null;
 				})

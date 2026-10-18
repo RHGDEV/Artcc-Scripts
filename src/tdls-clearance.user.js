@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         vTDLS Flight Plan Validator
 // @namespace    https://artcc.huskey.cc/tools/vtdls-validator/
-// @version      1.0.0
+// @version      1.0.1
 // @description  KMEM vTDLS flight plan validator using Vector ARTCC KMEM rules
 // @match        https://tdls.virtualnas.net/*
 // @grant        none
@@ -267,9 +267,15 @@
 							.map(normalizeStationCallsign),
 					);
 
-					const onlineControllers = vatsim.controllers.filter((controller) =>
-						airportCallsigns.has(normalizeStationCallsign(controller.callsign)),
-					);
+					const onlineControllers = vatsim.controllers
+						.filter(
+							(controller) =>
+								controller.facility > 4 &&
+								airportCallsigns.has(
+									normalizeStationCallsign(controller.callsign),
+								),
+						)
+						.sort((first, second) => second.facility - first.facility);
 
 					return onlineControllers.at(0)?.frequency ?? null;
 				})
