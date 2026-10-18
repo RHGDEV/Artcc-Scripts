@@ -6,8 +6,8 @@
 // @match        https://tdls.virtualnas.net/*
 // @grant        none
 // @run-at       document-idle
-// @updateURL    https://github.com/RHGDEV/Artcc-Scripts/raw/main/src/kmem-clearance.user.js
-// @downloadURL  https://github.com/RHGDEV/Artcc-Scripts/raw/main/src/kmem-clearance.user.js
+// @updateURL    https://github.com/RHGDEV/Artcc-Scripts/raw/main/src/tdls-clearance.user.js
+// @downloadURL  https://github.com/RHGDEV/Artcc-Scripts/raw/main/src/tdls-clearance.user.js
 // ==/UserScript==
 
 (function () {
