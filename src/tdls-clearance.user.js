@@ -2,6 +2,7 @@
 // @name         vTDLS Flight Plan Validator
 // @namespace    https://artcc.huskey.cc/tools/vtdls-validator/
 // @version      1.0.1
+// @author       RHG
 // @description  KMEM vTDLS flight plan validator using Vector ARTCC KMEM rules
 // @match        https://tdls.virtualnas.net/*
 // @grant        none
