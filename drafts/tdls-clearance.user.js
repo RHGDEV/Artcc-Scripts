@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         vTDLS Flight Plan Validator
 // @namespace    https://artcc.huskey.cc/tools/vtdls-validator/
-// @version      1.0.1
+// @version      1.1.0
 // @author       RHG
 // @description  KMEM vTDLS flight plan validator using Vector ARTCC KMEM rules
 // @match        https://tdls.virtualnas.net/*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      skyvector.com
+// @connect      www.skyvector.com
 // @run-at       document-idle
 // @updateURL    https://github.com/RHGDEV/Artcc-Scripts/raw/main/src/tdls-clearance.user.js
 // @downloadURL  https://github.com/RHGDEV/Artcc-Scripts/raw/main/src/tdls-clearance.user.js
@@ -16,13 +18,12 @@
 
 	const PREFIX = '[vTDLS Validator]';
 	const VATSIM_API = 'https://data.vatsim.net/v3/vatsim-data.json';
-	const AIRPORT_API = 'https://ryanburnette.github.io/airports-api/icao/';
 	const VATSIM_AIRPORT_API = 'https://my.vatsim.net/api/v2/aip/airports/';
 	let AIRPORT_CODE = '';
 	let DEPARTURE_AIRPORT = '';
 	let RULES_API = '';
 	const PLANE_TYPES_API =
-		'https://raw.githubusercontent.com/RHGDEV/Artcc-Scripts/refs/heads/main/rules/PlaneTypes.json';
+		'https://raw.githubusercontent.com/RHGDEV/Artcc-Scripts/refs/heads/main/data/PlaneTypes.json';
 	const AIRLINE_CODES_API =
 		'https://raw.githubusercontent.com/npow/airline-codes/refs/heads/master/airlines.json';
 	const FALLBACK_DEPARTURE_FREQUENCIES = ['122.8', 'OFFLINE'];
@@ -101,7 +102,7 @@
 
 		AIRPORT_CODE = airportCode;
 		DEPARTURE_AIRPORT = `K${airportCode}`;
-		RULES_API = `https://raw.githubusercontent.com/RHGDEV/Artcc-Scripts/refs/heads/main/rules/${airportCode}.json`;
+		RULES_API = `https://raw.githubusercontent.com/RHGDEV/Artcc-Scripts/refs/heads/main/data/${airportCode}.json`;
 
 		return true;
 	}
@@ -289,6 +290,84 @@
 		return departureFrequencyRequest;
 	}
 
+	function decodeHtml(value) {
+		return value
+			.replace(/&#x([0-9a-f]+);/gi, (_, code) =>
+				String.fromCodePoint(Number.parseInt(code, 16)),
+			)
+			.replace(/&#(\d+);/g, (_, code) =>
+				String.fromCodePoint(Number.parseInt(code, 10)),
+			)
+			.replace(/&amp;/g, '&')
+			.replace(/&quot;/g, '"')
+			.replace(/&apos;/g, "'")
+			.replace(/&lt;/g, '<')
+			.replace(/&gt;/g, '>');
+	}
+
+	function stripTags(value) {
+		return decodeHtml(value.replace(/<[^>]*>/g, ' '))
+			.replace(/\s+/g, ' ')
+			.trim();
+	}
+
+	function getSkyVectorMatch(html, pattern, description) {
+		const match = html.match(pattern);
+
+		if (!match) {
+			throw new Error(`Could not find ${description} on the SkyVector page.`);
+		}
+
+		return match;
+	}
+
+	function requestSkyVectorPage(url) {
+		return new Promise((resolve, reject) => {
+			GM_xmlhttpRequest({
+				method: 'GET',
+				url,
+				timeout: 15000,
+				onload: (response) => {
+					if (response.status < 200 || response.status >= 300) {
+						reject(new Error(`SkyVector request failed (${response.status}).`));
+						return;
+					}
+
+					resolve(response.responseText);
+				},
+				onerror: () => reject(new Error('SkyVector request failed.')),
+				ontimeout: () => reject(new Error('SkyVector request timed out.')),
+			});
+		});
+	}
+
+	async function getSkyVectorAirport(icao) {
+		const html = await requestSkyVectorPage(
+			`https://skyvector.com/airport/${icao}`,
+		);
+		const title = getSkyVectorMatch(
+			html,
+			/<title>\s*([^<]+?)\s*\|\s*SkyVector\s*<\/title>/i,
+			'airport title',
+		)[1];
+		const coordinates = getSkyVectorMatch(
+			html,
+			/[?&]ll=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/i,
+			'airport coordinates',
+		);
+		const location = html.match(
+			/Located\s+[^<]*?\bof\s+([^,<]+),\s*([^<.]+)[^.]*\./i,
+		);
+
+		return {
+			icao,
+			name: stripTags(title.replace(/^[A-Z0-9]{3}\s*-\s*/, '').trim()),
+			city: location?.[1]?.trim() ?? '',
+			latitude: Number(coordinates[1]),
+			longitude: Number(coordinates[2]),
+		};
+	}
+
 	// Fetch and cache airport coordinates and display metadata.
 	async function getAirportInfo(icao) {
 		const code = upper(icao);
@@ -298,33 +377,17 @@
 		}
 
 		if (!airportCache.has(code)) {
-			const request = fetch(`${AIRPORT_API}${code.toLowerCase()}.json`, {
-				cache: 'force-cache',
-			})
-				.then((response) => {
-					if (!response.ok) {
-						throw new Error(`Airport ${code} could not be found.`);
-					}
+			const request = getSkyVectorAirport(code).then((data) => {
+				if (
+					!data ||
+					typeof data.latitude !== 'number' ||
+					typeof data.longitude !== 'number'
+				) {
+					throw new Error(`Airport ${code} returned incomplete data.`);
+				}
 
-					return response.json();
-				})
-				.then((data) => {
-					if (
-						!data ||
-						typeof data.latitude !== 'number' ||
-						typeof data.longitude !== 'number'
-					) {
-						throw new Error(`Airport ${code} returned incomplete data.`);
-					}
-
-					return {
-						icao: upper(data.icao || code),
-						name: data.airport_name || data.name || code,
-						city: data.city || '',
-						latitude: Number(data.latitude),
-						longitude: Number(data.longitude),
-					};
-				});
+				return data;
+			});
 
 			airportCache.set(code, request);
 		}

@@ -51,5 +51,31 @@
 		"PIEPE": 6,
 		"SELPH": 7,
 		"ZUMIT": 5
+	},
+	"preferredRunways": {
+		"NORTH": {
+			"AZONE": "36C",
+			"BBKNG": "36C",
+			"CHLDR": "36L",
+			"CRSON": "36C",
+			"DUCKZ": "36L",
+			"GOETZ": "36C",
+			"JTEEE": "36L",
+			"PIEPE": "36L",
+			"SELPH": "36C",
+			"ZUMIT": "36L"
+		},
+		"SOUTH": {
+			"AZONE": "18C",
+			"BBKNG": "18C",
+			"CHLDR": "18R",
+			"CRSON": "18C",
+			"DUCKZ": "18R",
+			"GOETZ": "18C",
+			"JTEEE": "18R",
+			"PIEPE": "18R",
+			"SELPH": "18C",
+			"ZUMIT": "18R"
+		}
 	}
 }
