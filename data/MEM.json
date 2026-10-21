@@ -53,7 +53,7 @@
 		"ZUMIT": 5
 	},
 	"preferredRunways": {
-		"NORTH": {
+		"North": {
 			"AZONE": "36C",
 			"BBKNG": "36C",
 			"CHLDR": "36L",
@@ -65,7 +65,7 @@
 			"SELPH": "36C",
 			"ZUMIT": "36L"
 		},
-		"SOUTH": {
+		"South": {
 			"AZONE": "18C",
 			"BBKNG": "18C",
 			"CHLDR": "18R",
