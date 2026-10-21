@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         vTDLS Flight Plan Validator
 // @namespace    https://artcc.huskey.cc/tools/vtdls-validator/
-// @version      1.1.0
+// @version      1.2.0
 // @author       RHG
 // @description  KMEM vTDLS flight plan validator using Vector ARTCC KMEM rules
 // @match        https://tdls.virtualnas.net/*
@@ -39,6 +39,7 @@
 	let loadNotification = null;
 	let scanInProgress = false;
 	let scanRequested = false;
+	let selectedFlow = '';
 
 	/*
 	 * ============================================================
@@ -865,6 +866,104 @@
 		};
 	}
 
+	// Add and read the flow and runway controls from the DCL card.
+	function getRunwayControls(card) {
+		let flowPanel = card.querySelector('[data-kmem-flow-controls="true"]');
+		const runwaySelect = [...card.querySelectorAll('select')].find((select) =>
+			[...select.options].some((option) =>
+				/^(RWY ASSIGNED BY GC|EXPECT RWY\s+)/i.test(clean(option.text)),
+			),
+		);
+
+		if (!flowPanel) {
+			flowPanel = document.createElement('div');
+			flowPanel.dataset.kmemFlowControls = 'true';
+			flowPanel.style.position = 'absolute';
+			flowPanel.style.top = '8px';
+			flowPanel.style.right = '8px';
+			flowPanel.style.zIndex = '2';
+			flowPanel.style.display = 'inline-flex';
+			flowPanel.style.alignItems = 'center';
+			flowPanel.style.gap = '4px';
+			flowPanel.style.color = 'inherit';
+
+			const flowLabel = document.createElement('span');
+			flowLabel.style.color = '#fff';
+			flowLabel.style.fontWeight = '700';
+
+			const flowElement = document.createElement('select');
+			flowElement.setAttribute('aria-label', 'Current airport flow');
+			flowElement.title = 'Select the current airport flow';
+			flowElement.style.background = 'transparent';
+			flowElement.style.border = 'none';
+			flowElement.style.color = '#fff';
+			flowElement.style.colorScheme = 'dark';
+			flowElement.style.font = 'inherit';
+			flowElement.style.padding = '0';
+
+			const emptyOption = document.createElement('option');
+			emptyOption.value = '';
+			emptyOption.textContent = 'Select flow';
+			emptyOption.style.background = '#111827';
+			emptyOption.style.color = '#fff';
+			flowElement.append(emptyOption);
+
+			const configuredFlows = Object.keys(activeRules?.preferredRunways || {});
+			selectedFlow ||= configuredFlows[0] || '';
+
+			for (const flow of configuredFlows) {
+				const option = document.createElement('option');
+				option.value = flow;
+				option.textContent = `${flow} Flow`;
+				option.style.background = '#111827';
+				option.style.color = '#fff';
+				flowElement.append(option);
+			}
+
+			flowElement.value = selectedFlow;
+
+			flowPanel.append(flowLabel, flowElement);
+			card.prepend(flowPanel);
+		}
+
+		const flowElement = flowPanel.querySelector('select');
+		let expectedRunwayElement = card.querySelector(
+			'[data-kmem-preferred-runway="true"]',
+		);
+
+		if (!expectedRunwayElement && runwaySelect) {
+			expectedRunwayElement = document.createElement('span');
+			expectedRunwayElement.dataset.kmemPreferredRunway = 'true';
+			expectedRunwayElement.style.marginLeft = '4px';
+			expectedRunwayElement.style.font = 'inherit';
+			runwaySelect.after(expectedRunwayElement);
+		}
+
+		if (flowElement && !flowElement.dataset.kmemListener) {
+			flowElement.dataset.kmemListener = 'true';
+			flowElement.addEventListener('change', () => {
+				selectedFlow = flowElement.value;
+				scheduleScan();
+			});
+		}
+
+		return {
+			flow: clean(flowElement?.value),
+			runway:
+				clean(runwaySelect?.options?.[runwaySelect.selectedIndex]?.text).match(
+					/^EXPECT RWY\s+(.+)$/i,
+				)?.[1] || '',
+			flowElement,
+			runwayElement: runwaySelect,
+			expectedRunwayElement,
+		};
+	}
+
+	// Resolve the preferred runway for the selected flow and SID base.
+	function getPreferredRunway(flow, sid) {
+		return clean(activeRules?.preferredRunways?.[flow]?.[getSIDBase(sid)]);
+	}
+
 	// Read the selected departure frequency from a flight card.
 	function getDepartureFrequency(card) {
 		const label = [...card.querySelectorAll('span')].find((span) =>
@@ -1162,6 +1261,7 @@
 		const parsedSID = parseSID(route.value);
 
 		const sidElements = getSIDSelects(card, parsedSID);
+		const runwayControls = getRunwayControls(card);
 
 		const filedAltitude = getFiledAltitude(card);
 
@@ -1217,6 +1317,19 @@
 		 */
 
 		const sidCurrent = isCurrentSID(parsedSID.sid);
+		const preferredRunway = getPreferredRunway(
+			runwayControls.flow,
+			parsedSID.sid,
+		);
+		const runwayValid =
+			Boolean(runwayControls.flow && preferredRunway) &&
+			runwayControls.runway === upper(preferredRunway);
+
+		if (runwayControls.expectedRunwayElement) {
+			runwayControls.expectedRunwayElement.textContent = preferredRunway
+				? `RWY ${preferredRunway}`
+				: '';
+		}
 
 		/*
 		 * --------------------------------------------------------
@@ -1272,6 +1385,9 @@
 
 		register(sidElements.sidElement);
 		register(sidElements.transitionElement);
+		register(runwayControls.flowElement);
+		register(runwayControls.runwayElement);
+		register(runwayControls.expectedRunwayElement);
 
 		register(filedAltitude.element);
 		register(initialAltitude.element);
@@ -1376,6 +1492,36 @@
 				departureRule.validTransition
 					? `Transition ${parsedSID.transition} is correct.`
 					: `Expected transition ${departureRule.expectedTransition}.`,
+			);
+		}
+
+		/* Preferred runway. */
+
+		if (runwayControls.runwayElement) {
+			mark(
+				runwayControls.runwayElement,
+				runwayControls.flow && preferredRunway
+					? runwayValid
+						? 'valid'
+						: 'invalid'
+					: 'warning',
+				preferredRunway
+					? runwayValid
+						? `Runway ${runwayControls.runway} matches the ${runwayControls.flow} flow.`
+						: `Expected runway ${preferredRunway} for the ${runwayControls.flow} flow.`
+					: runwayControls.flow
+						? `No preferred runway is configured for SID ${parsedSID.sid}.`
+						: 'Select a flow before verifying the assigned runway.',
+			);
+		}
+
+		if (runwayControls.expectedRunwayElement && preferredRunway) {
+			mark(
+				runwayControls.expectedRunwayElement,
+				runwayValid ? 'valid' : 'warning',
+				runwayValid
+					? `Assigned runway matches the preferred runway ${preferredRunway}.`
+					: `Preferred runway for the ${runwayControls.flow} flow is ${preferredRunway}.`,
 			);
 		}
 
