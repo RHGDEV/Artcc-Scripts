@@ -1,11 +1,14 @@
 // ==UserScript==
 // @name         vTDLS Flight Plan Validator
 // @namespace    https://artcc.huskey.cc/tools/vtdls-validator/
-// @version      1.2.0
+// @version      1.3.0
 // @author       RHG
 // @description  KMEM vTDLS flight plan validator using Vector ARTCC KMEM rules
 // @match        https://tdls.virtualnas.net/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_registerMenuCommand
 // @connect      skyvector.com
 // @connect      www.skyvector.com
 // @run-at       document-idle
@@ -26,7 +29,27 @@
 		'https://raw.githubusercontent.com/RHGDEV/Artcc-Scripts/refs/heads/main/data/PlaneTypes.json';
 	const AIRLINE_CODES_API =
 		'https://raw.githubusercontent.com/npow/airline-codes/refs/heads/master/airlines.json';
-	const FALLBACK_DEPARTURE_FREQUENCIES = ['122.8', 'OFFLINE'];
+	const legacyDepartureFrequencies = GM_getValue('OFFLINE_DEP_FREQ', [
+		'122.8',
+		'OFFLINE',
+	]);
+	const legacyGroundFrequencies = GM_getValue('FALLBACK_GROUND_FREQ', []);
+	const storedSweatboxFrequencies = GM_getValue('SWEATBOX_FREQUENCIES', null);
+	let OFFLINE_DEP_FREQ = Array.isArray(legacyDepartureFrequencies)
+		? legacyDepartureFrequencies
+		: ['122.8', 'OFFLINE'];
+	let SWEATBOX_FREQUENCIES =
+		storedSweatboxFrequencies && typeof storedSweatboxFrequencies === 'object'
+			? storedSweatboxFrequencies
+			: {
+					ground: Array.isArray(legacyGroundFrequencies)
+						? legacyGroundFrequencies[0] || ''
+						: '',
+					departure: Array.isArray(legacyDepartureFrequencies)
+						? legacyDepartureFrequencies[0] || '122.8'
+						: '122.8',
+				};
+	let FREQUENCY_MODE = GM_getValue('FREQUENCY_MODE', 'Live');
 
 	const airportCache = new Map();
 	const airlineCache = new Map();
@@ -36,10 +59,94 @@
 	let rulesRequest = null;
 	let planeTypesRequest = null;
 	let airlineCodesRequest = null;
+	let stationFrequenciesRequest = null;
 	let loadNotification = null;
 	let scanInProgress = false;
 	let scanRequested = false;
 	let selectedFlow = '';
+
+	GM_registerMenuCommand('Show Configuration', function () {
+		alert(
+			[
+				`Airport: ${AIRPORT_CODE || 'unknown'} | Mode: ${FREQUENCY_MODE} | Flow: ${selectedFlow || 'none'}`,
+				'',
+				'Live fallback Frequencies:',
+				`  DEP: ${OFFLINE_DEP_FREQ.join(', ') || 'none'}`,
+				'',
+				'Sweatbox Frequencies:',
+				`  GND: ${SWEATBOX_FREQUENCIES.ground || 'none'}`,
+				`  DEP: ${SWEATBOX_FREQUENCIES.departure || 'none'}`,
+			].join('\n'),
+		);
+	});
+
+	GM_registerMenuCommand('Set Frequency Mode (Live/Sweatbox)', function () {
+		const mode = prompt(
+			'Enter frequency mode: Live or Sweatbox',
+			FREQUENCY_MODE,
+		);
+
+		if (mode === null) return;
+
+		const normalizedMode = mode.trim().toLowerCase();
+		if (normalizedMode !== 'live' && normalizedMode !== 'sweatbox') {
+			alert('Frequency mode must be Live or Sweatbox.');
+			return;
+		}
+
+		FREQUENCY_MODE = normalizedMode === 'live' ? 'Live' : 'Sweatbox';
+		GM_setValue('FREQUENCY_MODE', FREQUENCY_MODE);
+		scheduleScan();
+		alert(`Frequency mode set to ${FREQUENCY_MODE}.`);
+	});
+
+	GM_registerMenuCommand(
+		'Edit Live Fallback Departure Frequencies',
+		function () {
+			const userInput = prompt(
+				'Enter Live fallback Departure frequencies, separated by commas:',
+				OFFLINE_DEP_FREQ.join(', '),
+			);
+
+			if (userInput === null) return;
+
+			OFFLINE_DEP_FREQ = userInput
+				.split(',')
+				.map((frequency) => frequency.trim().toUpperCase())
+				.filter(Boolean);
+			GM_setValue('OFFLINE_DEP_FREQ', OFFLINE_DEP_FREQ);
+			scheduleScan();
+			alert(
+				`Fallback departure frequencies (${OFFLINE_DEP_FREQ.join(', ') || 'none'}) saved successfully!`,
+			);
+		},
+	);
+
+	GM_registerMenuCommand('Edit Sweatbox Frequencies', function () {
+		const groundFrequency = prompt(
+			'Enter the Sweatbox Ground Frequencies:',
+			SWEATBOX_FREQUENCIES.ground || '',
+		);
+
+		if (groundFrequency === null) return;
+
+		const departureFrequency = prompt(
+			'Enter the Sweatbox Departure Frequencies:',
+			SWEATBOX_FREQUENCIES.departure || '',
+		);
+
+		if (departureFrequency === null) return;
+
+		SWEATBOX_FREQUENCIES = {
+			ground: groundFrequency.trim(),
+			departure: departureFrequency.trim(),
+		};
+		GM_setValue('SWEATBOX_FREQUENCIES', SWEATBOX_FREQUENCIES);
+		scheduleScan();
+		alert(
+			`Sweatbox frequencies saved: GND ${SWEATBOX_FREQUENCIES.ground || 'none'}, DEP ${SWEATBOX_FREQUENCIES.departure || 'none'}`,
+		);
+	});
 
 	/*
 	 * ============================================================
@@ -250,9 +357,9 @@
 		return data?.stations ?? [];
 	}
 
-	async function getOnlineDepartureFrequency() {
-		if (!departureFrequencyRequest) {
-			departureFrequencyRequest = Promise.all([
+	async function getOnlineStationFrequencies() {
+		if (!stationFrequenciesRequest) {
+			stationFrequenciesRequest = Promise.all([
 				getAirportStations(),
 				fetch(VATSIM_API, { cache: 'no-store' }).then((response) => {
 					if (!response.ok) {
@@ -270,18 +377,47 @@
 							.map(normalizeStationCallsign),
 					);
 
-					const onlineControllers = vatsim.controllers
-						.filter(
-							(controller) =>
-								controller.facility > 4 &&
-								airportCallsigns.has(
-									normalizeStationCallsign(controller.callsign),
-								),
-						)
-						.sort((first, second) => second.facility - first.facility);
+					const onlineControllers = vatsim.controllers.filter((controller) =>
+						airportCallsigns.has(normalizeStationCallsign(controller.callsign)),
+					);
 
-					return onlineControllers.at(0)?.frequency ?? null;
+					const groundCallsigns = new Set(
+						stations
+							.map((station) => station.callsign)
+							.filter((callsign) => /_(?:GND|GROUND)$/i.test(callsign || ''))
+							.map(normalizeStationCallsign),
+					);
+
+					const departureController = [...onlineControllers]
+						.filter((controller) => controller.facility > 4)
+						.sort((first, second) => second.facility - first.facility)
+						.at(0);
+					const groundController = onlineControllers.find(
+						(controller) =>
+							controller.facility === 4 &&
+							groundCallsigns.has(
+								normalizeStationCallsign(controller.callsign),
+							),
+					);
+
+					return {
+						departureFrequency: departureController?.frequency ?? null,
+						groundFrequency: groundController?.frequency ?? null,
+					};
 				})
+				.catch((error) => {
+					stationFrequenciesRequest = null;
+					throw error;
+				});
+		}
+
+		return stationFrequenciesRequest;
+	}
+
+	async function getOnlineDepartureFrequency() {
+		if (!departureFrequencyRequest) {
+			departureFrequencyRequest = getOnlineStationFrequencies()
+				.then(({ departureFrequency }) => departureFrequency)
 				.catch((error) => {
 					departureFrequencyRequest = null;
 					throw error;
@@ -289,6 +425,11 @@
 		}
 
 		return departureFrequencyRequest;
+	}
+
+	async function getOnlineGroundFrequency() {
+		const { groundFrequency } = await getOnlineStationFrequencies();
+		return groundFrequency;
 	}
 
 	function decodeHtml(value) {
@@ -438,30 +579,79 @@
 	 */
 
 	// Apply validation styling and an optional explanation to an element.
-	function mark(element, status, title) {
+	function mark(element, status, title, expectedOptionText = '') {
 		if (!element) return;
+		const statusColors = {
+			valid: '#22c55e',
+			invalid: '#ef4444',
+			warning: '#eab308',
+		};
+		const expectedOptions = Array.isArray(expectedOptionText)
+			? expectedOptionText.filter(Boolean)
+			: expectedOptionText
+				? [expectedOptionText]
+				: [];
 
-		if (!element.dataset.kmemOriginalColor) {
+		if (element.dataset.kmemOriginalColor === undefined) {
 			element.dataset.kmemOriginalColor = element.style.color || '';
 		}
 
-		if (!element.dataset.kmemOriginalWeight) {
+		if (element.dataset.kmemOriginalWeight === undefined) {
 			element.dataset.kmemOriginalWeight = element.style.fontWeight || '';
 		}
 
-		if (status === 'valid') {
-			element.style.color = '#22c55e';
-		}
+		if (element.tagName === 'SELECT') {
+			for (const option of element.options) {
+				if (option.dataset.kmemOriginalColor !== undefined) {
+					option.style.color = option.dataset.kmemOriginalColor;
+					option.style.fontWeight = option.dataset.kmemOriginalWeight;
+					delete option.dataset.kmemOriginalColor;
+					delete option.dataset.kmemOriginalWeight;
+				}
 
-		if (status === 'invalid') {
-			element.style.color = '#ef4444';
-		}
+				option.dataset.kmemOriginalColor = option.style.color || '';
+				option.dataset.kmemOriginalWeight = option.style.fontWeight || '';
 
-		if (status === 'warning') {
-			element.style.color = '#eab308';
-		}
+				if (option.dataset.kmemOriginalComputedColor === undefined) {
+					option.dataset.kmemOriginalComputedColor =
+						getComputedStyle(option).color;
+				}
 
-		element.style.fontWeight = '800';
+				option.style.color = option.dataset.kmemOriginalComputedColor;
+			}
+
+			const expectedOptionSet = new Set(expectedOptions.map(upper));
+			const expectedOptionsFound = [...element.options].filter(
+				(option) =>
+					expectedOptionSet.has(upper(option.text)) ||
+					expectedOptionSet.has(upper(option.value)),
+			);
+
+			const selectedOption = element.options[element.selectedIndex];
+
+			if (selectedOption && statusColors[status]) {
+				selectedOption.dataset.kmemOriginalColor =
+					selectedOption.style.color || '';
+				selectedOption.dataset.kmemOriginalWeight =
+					selectedOption.style.fontWeight || '';
+				selectedOption.style.color = statusColors[status] || '';
+				selectedOption.style.fontWeight = '800';
+			}
+
+			for (const expectedOption of expectedOptionsFound) {
+				if (expectedOption !== selectedOption) {
+					expectedOption.style.color = statusColors.valid;
+					expectedOption.style.fontWeight = '800';
+				}
+			}
+
+			if (statusColors[status]) {
+				element.style.color = statusColors[status];
+			}
+		} else if (statusColors[status]) {
+			element.style.color = statusColors[status] || '';
+			element.style.fontWeight = '800';
+		}
 
 		if (title) {
 			element.title = title;
@@ -478,6 +668,19 @@
 
 		if (element.dataset.kmemOriginalWeight !== undefined) {
 			element.style.fontWeight = element.dataset.kmemOriginalWeight;
+		}
+
+		if (element.tagName === 'SELECT') {
+			for (const option of element.options) {
+				if (option.dataset.kmemOriginalColor !== undefined) {
+					option.style.color = option.dataset.kmemOriginalColor;
+					option.style.fontWeight = option.dataset.kmemOriginalWeight;
+					delete option.dataset.kmemOriginalColor;
+					delete option.dataset.kmemOriginalWeight;
+				}
+
+				delete option.dataset.kmemOriginalComputedColor;
+			}
 		}
 
 		delete element.dataset.kmemOriginalColor;
@@ -888,6 +1091,7 @@
 			flowPanel.style.color = 'inherit';
 
 			const flowLabel = document.createElement('span');
+			flowLabel.textContent = '';
 			flowLabel.style.color = '#fff';
 			flowLabel.style.fontWeight = '700';
 
@@ -949,6 +1153,9 @@
 
 		return {
 			flow: clean(flowElement?.value),
+			frequencyMode: ['Live', 'Sweatbox'].includes(FREQUENCY_MODE)
+				? FREQUENCY_MODE
+				: 'Live',
 			runway:
 				clean(runwaySelect?.options?.[runwaySelect.selectedIndex]?.text).match(
 					/^EXPECT RWY\s+(.+)$/i,
@@ -974,6 +1181,19 @@
 		return {
 			value: element ? clean(element.value) : '',
 			element,
+		};
+	}
+
+	// Find the ground-frequency clearance instruction select.
+	function getGroundInstruction(card) {
+		const element = [...card.querySelectorAll('select')].find((select) =>
+			[...select.options].some((option) =>
+				/^(?:CTC GC|PUSH AT PD CTC GC)\s+/i.test(clean(option.text)),
+			),
+		);
+
+		return {
+			element: element || null,
 		};
 	}
 
@@ -1133,12 +1353,12 @@
 	 */
 
 	// Resolve restricted and non-RNAV departure requirements.
-	function getDepartureRule(sid, transition, equipment) {
+	function getDepartureRule(sid, transition, equipment, aircraftCategory) {
 		const sidBase = getSIDBase(sid);
 
 		const restriction = activeRules.restrictedDepartures[sidBase];
 
-		if (!equipment.rnav) {
+		if (aircraftCategory === 'PROP' || !equipment.rnav) {
 			/* Resolve restricted departures before finding the ELVIS gate. */
 			const departureBase = getSIDBase(restriction?.[0] || sidBase);
 			const expectedTransition =
@@ -1268,17 +1488,24 @@
 		const initialAltitude = getInitialAltitude(card);
 
 		const departureFrequency = getDepartureFrequency(card);
+		const groundInstruction = getGroundInstruction(card);
 
 		const equipment = getEquipment(aircraft.equipment);
 
 		const aircraftCategory = getAircraftType(aircraft.type);
 
 		let onlineDepartureFrequency = null;
+		let onlineGroundFrequency = null;
+		const useSweatbox = runwayControls.frequencyMode === 'Sweatbox';
 
-		try {
-			onlineDepartureFrequency = await getOnlineDepartureFrequency();
-		} catch (error) {
-			warn('Unable to determine the online departure frequency:', error);
+		if (!useSweatbox) {
+			try {
+				const stationFrequencies = await getOnlineStationFrequencies();
+				onlineDepartureFrequency = stationFrequencies.departureFrequency;
+				onlineGroundFrequency = stationFrequencies.groundFrequency;
+			} catch (error) {
+				warn('Unable to determine online station frequencies:', error);
+			}
 		}
 
 		/*
@@ -1302,13 +1529,18 @@
 			departureFrequency.value,
 		);
 
-		const departureFrequencyValid =
-			onlineDepartureFrequency !== null
-				? normalizedDepartureFrequency ===
-					normalizeFrequency(onlineDepartureFrequency)
-				: FALLBACK_DEPARTURE_FREQUENCIES.includes(
-						upper(normalizedDepartureFrequency),
-					);
+		const departureExpectedFrequencies = useSweatbox
+			? SWEATBOX_FREQUENCIES.departure
+				? [SWEATBOX_FREQUENCIES.departure]
+				: []
+			: onlineDepartureFrequency !== null
+				? [onlineDepartureFrequency]
+				: OFFLINE_DEP_FREQ;
+		const departureFrequencyValid = departureExpectedFrequencies.some(
+			(expectedFrequency) =>
+				upper(normalizedDepartureFrequency) ===
+				upper(normalizeFrequency(expectedFrequency)),
+		);
 
 		/*
 		 * --------------------------------------------------------
@@ -1341,6 +1573,7 @@
 			parsedSID.sid,
 			parsedSID.transition,
 			equipment,
+			aircraftCategory,
 		);
 		if (
 			!sidCurrent ||
@@ -1392,6 +1625,7 @@
 		register(filedAltitude.element);
 		register(initialAltitude.element);
 		register(departureFrequency.element);
+		register(groundInstruction.element);
 
 		/*
 		 * Aircraft
@@ -1425,6 +1659,7 @@
 					: initialAltitudeValid
 						? `${aircraft.type} is a ${aircraftCategory.toLowerCase()}. ${expectedInitialAltitude}FT is correct.`
 						: `${aircraft.type} is a ${aircraftCategory.toLowerCase()}. Expected ${expectedInitialAltitude}FT.`,
+				expectedInitialAltitude === null ? '' : `${expectedInitialAltitude}FT`,
 			);
 		}
 
@@ -1432,13 +1667,49 @@
 			mark(
 				departureFrequency.element,
 				departureFrequencyValid ? 'valid' : 'invalid',
-				onlineDepartureFrequency === null
+				useSweatbox
 					? departureFrequencyValid
-						? 'No higher facility is online. 122.8 or OFFLINE is valid.'
-						: 'No higher facility is online. Use 122.8 or OFFLINE.'
-					: departureFrequencyValid
-						? `Departure frequency ${onlineDepartureFrequency} is correct.`
-						: `Expected departure frequency ${onlineDepartureFrequency}.`,
+						? `Sweatbox DEP frequency ${SWEATBOX_FREQUENCIES.departure} is correct.`
+						: `Expected Sweatbox DEP frequency ${SWEATBOX_FREQUENCIES.departure || 'not configured'}.`
+					: onlineDepartureFrequency === null
+						? departureFrequencyValid
+							? `No higher facility is online. ${departureFrequency.value} is valid.`
+							: `No higher facility is online. Use ${OFFLINE_DEP_FREQ.join(', ')}`
+						: departureFrequencyValid
+							? `Departure frequency ${onlineDepartureFrequency} is correct.`
+							: `Expected departure frequency ${onlineDepartureFrequency}.`,
+				departureExpectedFrequencies,
+			);
+		}
+
+		const groundFrequencies = useSweatbox
+			? SWEATBOX_FREQUENCIES.ground
+				? [SWEATBOX_FREQUENCIES.ground]
+				: []
+			: onlineGroundFrequency
+				? [onlineGroundFrequency]
+				: [];
+
+		if (groundInstruction.element && groundFrequencies.length) {
+			const expectedGroundOptions = groundFrequencies.flatMap((frequency) => {
+				const normalizedFrequency = normalizeFrequency(frequency);
+
+				return [
+					`CTC GC ${frequency}`,
+					`PUSH AT PD CTC GC ${frequency}`,
+					`CTC GC ${normalizedFrequency}`,
+					`PUSH AT PD CTC GC ${normalizedFrequency}`,
+				];
+			});
+			const fallbackGround = useSweatbox;
+
+			mark(
+				groundInstruction.element,
+				null,
+				fallbackGround
+					? `${useSweatbox ? 'Sweatbox' : 'Fallback'} ground frequencies: ${groundFrequencies.join(', ')}.`
+					: `Ground frequency ${onlineGroundFrequency} is online.`,
+				expectedGroundOptions,
 			);
 		}
 
@@ -1456,6 +1727,7 @@
 				sidCurrent
 					? `SID ${parsedSID.sid} is current and valid.`
 					: `SID ${parsedSID.sid} is not current. Expected ${getSIDBase(parsedSID.sid)}${getSIDCycle(parsedSID.sid)}.`,
+				getCurrentSID(parsedSID.sid),
 			);
 		}
 
@@ -1476,6 +1748,7 @@
 				departureValid
 					? `Departure ${parsedSID.sid} is correct.`
 					: `Expected departure ${departureRule.expectedDeparture}.`,
+				departureRule.expectedDeparture,
 			);
 		}
 
@@ -1492,6 +1765,7 @@
 				departureRule.validTransition
 					? `Transition ${parsedSID.transition} is correct.`
 					: `Expected transition ${departureRule.expectedTransition}.`,
+				departureRule.expectedTransition,
 			);
 		}
 
@@ -1512,6 +1786,7 @@
 					: runwayControls.flow
 						? `No preferred runway is configured for SID ${parsedSID.sid}.`
 						: 'Select a flow before verifying the assigned runway.',
+				preferredRunway ? `EXPECT RWY ${preferredRunway}` : '',
 			);
 		}
 
